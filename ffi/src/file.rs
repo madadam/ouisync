@@ -3,13 +3,9 @@ use super::{
     utils::{self, AssumeSend, Port, SharedHandle},
 };
 use ouisync_lib::{sync::Mutex, Error, File, Repository, Result};
-use std::{
-    convert::TryInto,
-    io::SeekFrom,
-    os::raw::{c_char, c_int},
-    slice,
-    sync::Arc,
-};
+#[cfg(unix)]
+use std::os::raw::c_int;
+use std::{convert::TryInto, io::SeekFrom, os::raw::c_char, slice, sync::Arc};
 
 pub struct FfiFile {
     file: File,

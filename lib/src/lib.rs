@@ -29,6 +29,8 @@ mod joint_directory;
 mod joint_entry;
 mod locator;
 mod metadata;
+#[cfg(windows)]
+mod named_pipe;
 mod progress;
 mod repository;
 mod scoped_task;
