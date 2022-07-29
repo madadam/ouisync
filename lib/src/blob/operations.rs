@@ -17,7 +17,7 @@ use crate::{
     sync::MutexGuard,
 };
 use sqlx::Connection;
-use std::{convert::TryInto, io::SeekFrom};
+use std::{convert::TryInto, io::SeekFrom, ops::Range};
 
 pub(crate) struct Operations<'a> {
     pub(super) shared: MutexGuard<'a, Shared>,
@@ -221,11 +221,8 @@ impl<'a> Operations<'a> {
         remove_blocks(
             conn,
             &self.unique.branch,
-            self.unique
-                .head_locator
-                .sequence()
-                .skip(new_block_count as usize)
-                .take((old_block_count - new_block_count) as usize),
+            self.unique.head_locator,
+            new_block_count..old_block_count,
         )
         .await
     }
@@ -442,16 +439,18 @@ pub(super) fn encrypt_block(
     block_key.encrypt_no_aead(&Nonce::default(), content);
 }
 
-pub(super) async fn remove_blocks<T>(
+pub(super) async fn remove_blocks(
     conn: &mut db::Connection,
     branch: &Branch,
-    locators: T,
-) -> Result<()>
-where
-    T: IntoIterator<Item = Locator>,
-{
+    first_locator: Locator,
+    range: Range<u32>,
+) -> Result<()> {
     let read_key = branch.keys().read();
     let write_keys = branch.keys().write().ok_or(Error::PermissionDenied)?;
+    let locators = first_locator
+        .sequence()
+        .skip(range.start as usize)
+        .take(range.len());
 
     let mut tx = conn.begin().await?;
 

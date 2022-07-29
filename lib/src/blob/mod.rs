@@ -77,12 +77,7 @@ impl Blob {
         let len = current_block.content.read_u64();
         let block_count = inner::block_count(len);
 
-        operations::remove_blocks(
-            conn,
-            branch,
-            head_locator.sequence().take(block_count as usize),
-        )
-        .await?;
+        operations::remove_blocks(conn, branch, head_locator, 0..block_count).await?;
 
         Ok(())
     }
