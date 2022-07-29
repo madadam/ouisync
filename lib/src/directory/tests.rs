@@ -4,7 +4,7 @@ use crate::{
     blob::{Blob, BlobCache},
     crypto::sign::Keypair,
     db,
-    index::BranchData,
+    index::{trash_queue, BranchData},
 };
 use assert_matches::assert_matches;
 use futures_util::future;
@@ -100,6 +100,10 @@ async fn remove_file() {
     assert_matches!(parent_dir.lookup(name), Ok(EntryRef::Tombstone(_)));
     assert_eq!(parent_dir.entries().count(), 1);
 
+    trash_queue::flush_some(&mut conn, branch.keys(), u32::MAX)
+        .await
+        .unwrap();
+
     // Check the file blob itself was removed as well.
     match Blob::open(&mut conn, branch.clone(), file_locator, Shared::uninit()).await {
         Err(Error::EntryNotFound) => (),
@@ -108,7 +112,6 @@ async fn remove_file() {
     }
 
     // Try re-creating the file again
-    drop(parent_dir); // Drop the previous handle to avoid deadlock.
     let mut parent_dir = branch.open_root(&mut conn).await.unwrap();
 
     let mut file = parent_dir
@@ -397,6 +400,10 @@ async fn remove_subdirectory() {
     // Reopen again and check the subdirectory entry was removed.
     let parent_dir = branch.open_root(&mut conn).await.unwrap();
     assert_matches!(parent_dir.lookup(name), Ok(EntryRef::Tombstone(_)));
+
+    trash_queue::flush_some(&mut conn, branch.keys(), u32::MAX)
+        .await
+        .unwrap();
 
     // Check the directory blob itself was removed as well.
     match Blob::open(&mut conn, branch, dir_locator, Shared::uninit()).await {

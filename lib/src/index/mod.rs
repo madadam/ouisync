@@ -5,6 +5,7 @@ mod proof;
 mod receive_filter;
 #[cfg(test)]
 mod tests;
+pub(crate) mod trash_queue;
 
 #[cfg(test)]
 pub(crate) use self::node::test_utils as node_test_utils;

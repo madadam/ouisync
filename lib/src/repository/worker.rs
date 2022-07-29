@@ -402,6 +402,8 @@ mod scan {
     }
 
     async fn process_blocks(shared: &Shared, mode: Mode, mut block_ids: BlockIds) -> Result<()> {
+        // TODO: don't hold the db connection throughout this whole operation. Release and
+        // reacquire it every few blocks instead.
         let mut conn = shared.store.db().acquire().await?;
 
         while let Some(block_id) = block_ids.next(&mut conn).await? {

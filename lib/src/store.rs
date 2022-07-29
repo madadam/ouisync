@@ -36,6 +36,7 @@ impl Store {
     pub(crate) async fn sync_progress(&self) -> Result<Progress> {
         let mut conn = self.db().acquire().await?;
 
+        // TODO: OPTIMIZE: this query is inefficient for large repos.
         // TODO: should we use `COUNT(DISTINCT ... )` ?
         Ok(sqlx::query(
             "SELECT

@@ -5,19 +5,18 @@ use super::{
 };
 use crate::{
     block::{self, BlockId, BlockNonce, BLOCK_SIZE},
-    branch::Branch,
     crypto::{
         cipher::{self, Nonce, SecretKey},
         sign,
     },
     db,
     error::{Error, Result},
-    index::BranchData,
+    index::{trash_queue, BranchData},
     locator::Locator,
     sync::MutexGuard,
 };
 use sqlx::Connection;
-use std::{convert::TryInto, io::SeekFrom, ops::Range};
+use std::{convert::TryInto, io::SeekFrom};
 
 pub(crate) struct Operations<'a> {
     pub(super) shared: MutexGuard<'a, Shared>,
@@ -218,10 +217,10 @@ impl<'a> Operations<'a> {
             self.seek(conn, SeekFrom::End(0)).await?;
         }
 
-        remove_blocks(
+        trash_queue::push(
             conn,
-            &self.unique.branch,
-            self.unique.head_locator,
+            self.unique.branch.id(),
+            self.unique.head_locator.blob_id(),
             new_block_count..old_block_count,
         )
         .await
@@ -437,31 +436,4 @@ pub(super) fn encrypt_block(
 ) {
     let block_key = SecretKey::derive_from_key(blob_key.as_ref(), block_nonce);
     block_key.encrypt_no_aead(&Nonce::default(), content);
-}
-
-pub(super) async fn remove_blocks(
-    conn: &mut db::Connection,
-    branch: &Branch,
-    first_locator: Locator,
-    range: Range<u32>,
-) -> Result<()> {
-    let read_key = branch.keys().read();
-    let write_keys = branch.keys().write().ok_or(Error::PermissionDenied)?;
-    let locators = first_locator
-        .sequence()
-        .skip(range.start as usize)
-        .take(range.len());
-
-    let mut tx = conn.begin().await?;
-
-    for locator in locators {
-        branch
-            .data()
-            .remove(&mut tx, &locator.encode(read_key), write_keys)
-            .await?;
-    }
-
-    tx.commit().await?;
-
-    Ok(())
 }

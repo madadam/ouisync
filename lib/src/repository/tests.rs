@@ -76,6 +76,7 @@ async fn count_leaf_nodes_sanity_checks() {
 
     drop(file);
     repo.remove_entry(file_name).await.unwrap();
+    repo.force_garbage_collection().await.unwrap();
 
     // 1 = one for the root with a tombstone entry
     assert_eq!(count_local_index_leaf_nodes(&repo).await, 1);
@@ -724,6 +725,8 @@ async fn attempt_to_modify_remote_file() {
     // fail because they expect it to have read-only mode. To prevent this we manually trigger
     // the garbage collector and wait for it to finish, to make sure the root dir is dropped and
     // removed from the cache. Then `open_file` reopens the root dir correctly in read-only mode.
+    //
+    // TODO: this should not be needed anymore
     repo.force_garbage_collection().await.unwrap();
 
     let mut file = repo.open_file("test.txt").await.unwrap();

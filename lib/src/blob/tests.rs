@@ -275,6 +275,9 @@ async fn remove_blob() {
 
     // Remove the blob
     Blob::remove(&mut conn, &branch, locator0).await.unwrap();
+    trash_queue::flush_some(&mut conn, branch.keys(), u32::MAX)
+        .await
+        .unwrap();
 
     // Check the block entries were deleted from the index.
     assert_matches!(
@@ -328,6 +331,10 @@ async fn truncate_to_empty() {
     assert_eq!(blob.read(&mut conn, &mut buffer).await.unwrap(), 0);
     assert_eq!(blob.len().await, 0);
 
+    trash_queue::flush_some(&mut conn, branch.keys(), u32::MAX)
+        .await
+        .unwrap();
+
     // Check the second block entry was deleted from the index
     assert_matches!(
         branch.data().get(&mut conn, &locator1).await,
@@ -372,6 +379,10 @@ async fn truncate_to_shorter() {
     assert_eq!(blob.read(&mut conn, &mut buffer).await.unwrap(), new_len);
     assert_eq!(buffer, content[..new_len]);
     assert_eq!(blob.len().await, new_len as u64);
+
+    trash_queue::flush_some(&mut conn, branch.keys(), u32::MAX)
+        .await
+        .unwrap();
 
     for locator in &[locator1, locator2] {
         assert_matches!(

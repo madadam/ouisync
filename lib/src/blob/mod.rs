@@ -12,7 +12,7 @@ pub(crate) use self::{
 use self::{inner::Unique, open_block::OpenBlock, operations::Operations};
 use crate::{
     blob_id::BlobId, block::BlockId, branch::Branch, db, error::Error, error::Result,
-    locator::Locator, sync::Mutex,
+    index::trash_queue, locator::Locator, sync::Mutex,
 };
 use std::{io::SeekFrom, mem, sync::Arc};
 
@@ -77,7 +77,7 @@ impl Blob {
         let len = current_block.content.read_u64();
         let block_count = inner::block_count(len);
 
-        operations::remove_blocks(conn, branch, head_locator, 0..block_count).await?;
+        trash_queue::push(conn, branch.id(), head_locator.blob_id(), 0..block_count).await?;
 
         Ok(())
     }

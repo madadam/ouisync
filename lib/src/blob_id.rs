@@ -9,6 +9,8 @@ define_byte_array_wrapper! {
     pub(crate) struct BlobId([u8; 32]);
 }
 
+derive_sqlx_traits_for_byte_array_wrapper!(BlobId);
+
 impl BlobId {
     pub(crate) const ROOT: Self = Self([0; Self::SIZE]);
 }
