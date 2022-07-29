@@ -34,26 +34,37 @@ pub(crate) async fn push(
 
 /// Delete all blocks scheduled in the trash queue. Takes `Pool` instead of `Connection` to allow
 /// periodically releasing the db connection to prevent blocking it for too long.
-pub(crate) async fn flush_all(db: &db::Pool, access_keys: &AccessKeys) -> Result<u32> {
+<<<<<<< HEAD
+pub(crate) async fn flush_all(db: &db::Pool, access_keys: &AccessKeys) -> Result<()> {
+    loop {
+        let mut conn = db.acquire().await?;
+        if !flush_some(&mut conn, access_keys, BATCH_SIZE).await? {
+=======
+pub(crate) async fn process_all(db: &db::Pool, access_keys: &AccessKeys) -> Result<u32> {
     let mut removed_total = 0;
 
     loop {
         let mut conn = db.acquire().await?;
-        let (has_more, removed) = flush_some(&mut conn, access_keys, BATCH_SIZE).await?;
+        let (has_more, removed) = process_some(&mut conn, access_keys, BATCH_SIZE).await?;
+        removed_total += removed;
 
         if !has_more {
+>>>>>>> 4c2d6bdc... Run trash queue processing in Worker
             break;
         }
-
-        removed_total += removed;
     }
 
     Ok(removed_total)
 }
 
 /// Delete at most `limit` blocks from the trash queue. Returns whether there are still some blocks
-/// remaining in the queue and the number of blocks removed.
+<<<<<<< HEAD
+/// remaining in the queue.
 pub(crate) async fn flush_some(
+=======
+/// remaining in the queue and the number of blocks removed.
+pub(crate) async fn process_some(
+>>>>>>> 4c2d6bdc... Run trash queue processing in Worker
     conn: &mut db::Connection,
     access_keys: &AccessKeys,
     mut limit: u32,

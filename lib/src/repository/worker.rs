@@ -49,7 +49,8 @@ impl Worker {
 
     pub async fn run(self) {
         select! {
-            _ = self.inner.run(self.command_rx) => (),
+            _ = self.inner.run_main(self.command_rx) => (),
+            _ = self.inner.run_flush_trash_queue() => (),
             _ = self.abort_rx => (),
         }
     }
@@ -98,7 +99,8 @@ struct Inner {
 }
 
 impl Inner {
-    async fn run(self, mut command_rx: mpsc::Receiver<Command>) {
+    // Run merge, prune and scan and also handle commands.
+    async fn run_main(&self, mut command_rx: mpsc::Receiver<Command>) {
         let mut event_rx =
             IgnoreScopeReceiver::new(self.shared.store.index.subscribe(), self.event_scope);
         let mut wait = false;
@@ -146,6 +148,21 @@ impl Inner {
         }
     }
 
+    // Run flush_trash_queue
+    async fn run_flush_trash_queue(&self) {
+        let mut event_rx = self.shared.store.index.subscribe();
+
+        // Clippy false positive because while the suggested replacement is logically identical it
+        // isn't identical in the expressed intent (might miss new variants added in the future).
+        #[allow(clippy::while_let_loop)]
+        loop {
+            match event_rx.recv().await {
+                Ok(_) | Err(RecvError::Lagged(_)) => self.flush_trash_queue().await.unwrap_or(()),
+                Err(RecvError::Closed) => break,
+            }
+        }
+    }
+
     async fn handle_command(&self, command: Command) {
         match command {
             Command::Merge(result_tx) => result_tx.send(self.merge().await).unwrap_or(()),
@@ -166,6 +183,7 @@ impl Inner {
     }
 
     async fn prune(&self) -> Result<()> {
+        // FIXME: this currently fails in blind mode
         self.event_scope.apply(prune::run(&self.shared)).await
     }
 
@@ -177,9 +195,18 @@ impl Inner {
         scan::run(&self.shared, mode).await
     }
 
+    async fn flush_trash_queue(&self) -> Result<()> {
+        if let Some(access_keys) = self.shared.secrets.keys() {
+            flush_trash_queue::run(&self.shared, &access_keys).await
+        } else {
+            Ok(())
+        }
+    }
+
     async fn collect(&self) -> Result<()> {
         self.prune().await?;
         self.scan(scan::Mode::Collect).await?;
+        self.flush_trash_queue().await?;
         Ok(())
     }
 }
@@ -430,6 +457,18 @@ mod scan {
             shared.store.block_tracker.require(block_id);
         }
 
+        Ok(())
+    }
+}
+
+mod flush_trash_queue {
+    use super::*;
+    use crate::{access_control::AccessKeys, index::trash_queue};
+
+    #[instrument(level = "trace", name = "process_trash_queue", skip_all, err)]
+    pub(super) async fn run(shared: &Shared, access_keys: &AccessKeys) -> Result<()> {
+        let count = trash_queue::flush_all(shared.store.db(), access_keys).await?;
+        tracing::trace!("blocks removed: {}", count);
         Ok(())
     }
 }
