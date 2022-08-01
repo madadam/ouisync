@@ -197,6 +197,14 @@ impl<'a> Operations<'a> {
 
     /// Truncate the blob to the given length.
     pub async fn truncate(&mut self, conn: &mut db::Connection, len: u64) -> Result<()> {
+        // FIXME: make this atomic / cancel-safe
+
+        // Check the permissions. This is done also during flushing of the trash queue, but this
+        // way the caller gets immediate feedback.
+        if self.unique.branch.keys().write().is_none() {
+            return Err(Error::PermissionDenied);
+        }
+
         if len == self.shared.len {
             return Ok(());
         }
