@@ -28,7 +28,7 @@ pub struct Pool {
     reads: SqlitePool,
     // Pool with a single writable connection.
     write: SqlitePool,
-    shared_tx: Arc<AsyncMutex<Option<WriteTransaction>>>,
+    shared_tx: Arc<AsyncMutex<Option<Transaction>>>,
 }
 
 impl Pool {
@@ -65,47 +65,41 @@ impl Pool {
         self.reads.acquire().await.map(PoolConnection)
     }
 
-    /// Begin a read-only transaction. See [`ReadTransaction`] for more details.
-    pub async fn begin_read(&self) -> Result<ReadTransaction, sqlx::Error> {
-        Ok(ReadTransaction(self.reads.begin().await?))
-    }
-
     /// Begin a regular ("unique") write transaction. At most one task can hold a write transaction
-    /// at any time. Any other tasks are blocked on calling `begin_write` until the task that
-    /// currently holds it is done with it (commits it or rolls it back). Performing read-only
-    /// operations concurrently while a write transaction is in use is still allowed. Those
-    /// operations will not see the writes performed via the write transaction until that
-    /// transaction is committed however.
+    /// at any time. Any other tasks are blocked on calling `begin` until the task that currently
+    /// holds it commits it or rolls it back. Performing read-only operations concurrently while a
+    /// write transaction is in use is still allowed. Those operations will not see the writes
+    /// performed via the write transaction until that transaction is committed however.
     ///
-    /// If an idle `SharedTransaction` exists in the pool when `begin_write` is called, it is
+    /// If an idle `SharedTransaction` exists in the pool when `begin` is called, it is
     /// automatically committed before the regular write transaction is created.
-    pub async fn begin_write(&self) -> Result<WriteTransaction, sqlx::Error> {
+    pub async fn begin(&self) -> Result<Transaction, sqlx::Error> {
         let mut shared_tx = self.shared_tx.lock().await;
 
         if let Some(tx) = shared_tx.take() {
             tx.commit().await?;
         }
 
-        Ok(WriteTransaction(self.write.begin().await?))
+        Ok(Transaction(self.write.begin().await?))
     }
 
     /// Begin a shared write transaction. Unlike regular write transaction, a shared write
     /// transaction is not automatically rolled back when dropped. Instead it's returned to the
-    /// pool where it can be reused by calling `begin_shared_write` again. An idle shared write
-    /// transaction is auto committed when a regular write transaction is created with
-    /// `begin_write`. Shared write transaction can also be manually committed or rolled back by
-    /// calling `commit` or `rollback` on it respectively.
+    /// pool where it can be reused by calling `begin_shared` again. An idle shared write
+    /// transaction is auto committed when a regular write transaction is created with `begin`.
+    /// Shared write transaction can also be manually committed or rolled back by calling `commit`
+    /// or `rollback` on it respectively.
     ///
     /// Use shared write transactions to group multiple writes that don't logically need to be in
     /// the same transaction to improve performance by reducing the number of commits.
-    pub async fn begin_shared_write(&self) -> Result<SharedWriteTransaction, sqlx::Error> {
+    pub async fn begin_shared(&self) -> Result<SharedTransaction, sqlx::Error> {
         let mut shared_tx = self.shared_tx.clone().lock_owned().await;
 
         if shared_tx.is_none() {
-            *shared_tx = Some(WriteTransaction(self.write.begin().await?));
+            *shared_tx = Some(Transaction(self.write.begin().await?));
         }
 
-        Ok(SharedWriteTransaction(shared_tx))
+        Ok(SharedTransaction(shared_tx))
     }
 
     pub(crate) async fn close(&self) -> Result<(), sqlx::Error> {
@@ -141,35 +135,11 @@ impl DerefMut for PoolConnection {
     }
 }
 
-/// Transaction that allows only reading.
-///
-/// This is useful if one wants to make sure the observed database content doesn't change for the
-/// duration of the transaction even in the presence of concurrent writes. In other words - a read
-/// transaction represents an immutable snapshot of the database at the point the transaction was
-/// created. A read transaction doesn't need to be committed or rolled back - it's implicitly ended
-/// when the `ReadTransaction` instance drops.
-#[derive(Debug)]
-pub struct ReadTransaction(sqlx::Transaction<'static, Sqlite>);
-
-impl Deref for ReadTransaction {
-    type Target = Connection;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.deref()
-    }
-}
-
-impl DerefMut for ReadTransaction {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.deref_mut()
-    }
-}
-
 /// Transaction that allows writing to the database.
 #[derive(Debug)]
-pub struct WriteTransaction(sqlx::Transaction<'static, Sqlite>);
+pub struct Transaction(sqlx::Transaction<'static, Sqlite>);
 
-impl WriteTransaction {
+impl Transaction {
     pub async fn commit(self) -> Result<(), sqlx::Error> {
         self.0.commit().await
     }
@@ -179,7 +149,7 @@ impl WriteTransaction {
     }
 }
 
-impl Deref for WriteTransaction {
+impl Deref for Transaction {
     type Target = Connection;
 
     fn deref(&self) -> &Self::Target {
@@ -187,7 +157,7 @@ impl Deref for WriteTransaction {
     }
 }
 
-impl DerefMut for WriteTransaction {
+impl DerefMut for Transaction {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.0.deref_mut()
     }
@@ -195,13 +165,13 @@ impl DerefMut for WriteTransaction {
 
 /// Shared write transaction
 ///
-/// See [Pool::begin_shared_write] for more details.
+/// See [Pool::begin_shared] for more details.
 
 // NOTE: The `Option` is never `None` except after `commit` or `rollback` but those methods take
 // `self` by value so the `None` is never observable. So it's always OK to call `unwrap` on it.
-pub struct SharedWriteTransaction(AsyncOwnedMutexGuard<Option<WriteTransaction>>);
+pub struct SharedTransaction(AsyncOwnedMutexGuard<Option<Transaction>>);
 
-impl SharedWriteTransaction {
+impl SharedTransaction {
     pub async fn commit(mut self) -> Result<(), sqlx::Error> {
         // `unwrap` is ok, see the NOTE above.
         self.0.take().unwrap().commit().await
@@ -213,8 +183,8 @@ impl SharedWriteTransaction {
     }
 }
 
-impl Deref for SharedWriteTransaction {
-    type Target = WriteTransaction;
+impl Deref for SharedTransaction {
+    type Target = Transaction;
 
     fn deref(&self) -> &Self::Target {
         // `unwrap` is ok, see the NOTE above.
@@ -222,7 +192,7 @@ impl Deref for SharedWriteTransaction {
     }
 }
 
-impl DerefMut for SharedWriteTransaction {
+impl DerefMut for SharedTransaction {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // `unwrap` is ok, see the NOTE above.
         self.0.as_mut().unwrap()

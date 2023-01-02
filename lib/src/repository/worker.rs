@@ -306,7 +306,7 @@ mod prune {
 
             tracing::trace!(id = ?snapshot.branch_id(), "removing outdated branch");
 
-            let mut tx = shared.store.db().begin_write().await?;
+            let mut tx = shared.store.db().begin().await?;
             snapshot.remove_all_older(&mut tx).await?;
             snapshot.remove(&mut tx).await?;
             tx.commit().await?;
@@ -510,7 +510,7 @@ mod scan {
                 break;
             }
 
-            let mut tx = shared.store.db().begin_write().await?;
+            let mut tx = shared.store.db().begin().await?;
 
             total_count += batch.len();
 
@@ -538,10 +538,10 @@ mod scan {
         branch: Branch,
         blob_id: BlobId,
     ) -> Result<()> {
-        let mut tx = shared.store.db().begin_read().await?;
-        let mut blob_block_ids = BlockIds::open(&mut tx, branch, blob_id).await?;
+        let mut conn = shared.store.db().acquire().await?;
+        let mut blob_block_ids = BlockIds::open(&mut conn, branch, blob_id).await?;
 
-        while let Some(block_id) = blob_block_ids.try_next(&mut tx).await? {
+        while let Some(block_id) = blob_block_ids.try_next(&mut conn).await? {
             if matches!(mode, Mode::RequireAndCollect | Mode::Collect) {
                 unreachable_block_ids.remove(&block_id);
             }
@@ -549,7 +549,7 @@ mod scan {
             if matches!(mode, Mode::RequireAndCollect | Mode::Require) {
                 shared
                     .store
-                    .require_missing_block(&mut tx, block_id)
+                    .require_missing_block(&mut conn, block_id)
                     .await?;
             }
         }
@@ -558,7 +558,7 @@ mod scan {
     }
 
     async fn remove_local_nodes(
-        tx: &mut db::WriteTransaction,
+        tx: &mut db::Transaction,
         snapshot: &mut SnapshotData,
         write_keys: &Keypair,
         block_ids: &[BlockId],
@@ -580,7 +580,7 @@ mod scan {
         Ok(())
     }
 
-    async fn remove_blocks(tx: &mut db::WriteTransaction, block_ids: &[BlockId]) -> Result<()> {
+    async fn remove_blocks(tx: &mut db::Transaction, block_ids: &[BlockId]) -> Result<()> {
         for block_id in block_ids {
             tracing::trace!(?block_id, "unreachable block removed");
 

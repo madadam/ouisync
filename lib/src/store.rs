@@ -78,7 +78,7 @@ impl Store {
         data: &BlockData,
         nonce: &BlockNonce,
     ) -> Result<()> {
-        let mut tx = self.db().begin_write().await?;
+        let mut tx = self.db().begin().await?;
 
         let writer_ids = match index::receive_block(&mut tx, &data.id).await {
             Ok(writer_ids) => writer_ids,
@@ -217,7 +217,7 @@ mod tests {
         let block_id = rand::random();
         let buffer = vec![0; BLOCK_SIZE];
 
-        let mut tx = pool.begin_write().await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
 
         block::write(&mut tx, &block_id, &buffer, &BlockNonce::default())
             .await
@@ -287,7 +287,7 @@ mod tests {
         rng.fill(&mut buffer[..]);
         let id0 = BlockId::from_content(&buffer);
 
-        let mut tx = pool.begin_write().await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
 
         block::write(&mut tx, &id0, &buffer, &rng.gen())
             .await
@@ -478,7 +478,7 @@ mod tests {
         let locator = locator.encode(&read_key);
         let block_id = rand::random();
 
-        let mut tx = store.db().begin_write().await.unwrap();
+        let mut tx = store.db().begin().await.unwrap();
         branch
             .insert(
                 &mut tx,

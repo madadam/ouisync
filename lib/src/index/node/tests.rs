@@ -27,7 +27,7 @@ async fn create_new_root_node() {
     let write_keys = Keypair::random();
     let hash = rand::random();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let node0 = RootNode::create(
         &mut tx,
@@ -61,7 +61,7 @@ async fn attempt_to_create_existing_root_node() {
     let write_keys = Keypair::random();
     let hash = rand::random();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let node = RootNode::create(
         &mut tx,
@@ -99,7 +99,7 @@ async fn create_new_inner_node() {
     let hash = rand::random();
     let bucket = rand::random();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let node = InnerNode::new(hash, Summary::FULL);
     node.save(&mut tx, &parent, bucket).await.unwrap();
@@ -123,7 +123,7 @@ async fn create_existing_inner_node() {
     let hash = rand::random();
     let bucket = rand::random();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let node0 = InnerNode::new(hash, Summary::FULL);
     node0.save(&mut tx, &parent, bucket).await.unwrap();
@@ -156,7 +156,7 @@ async fn attempt_to_create_conflicting_inner_node() {
         }
     };
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let node0 = InnerNode::new(hash0, Summary::FULL);
     node0.save(&mut tx, &parent, bucket).await.unwrap();
@@ -173,7 +173,7 @@ async fn save_new_present_leaf_node() {
     let encoded_locator = rand::random();
     let block_id = rand::random();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let node = LeafNode::present(encoded_locator, block_id);
     node.save(&mut tx, &parent).await.unwrap();
@@ -195,7 +195,7 @@ async fn save_new_missing_leaf_node() {
     let encoded_locator = rand::random();
     let block_id = rand::random();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let node = LeafNode::missing(encoded_locator, block_id);
     node.save(&mut tx, &parent).await.unwrap();
@@ -217,7 +217,7 @@ async fn save_missing_leaf_node_over_existing_missing_one() {
     let encoded_locator = rand::random();
     let block_id = rand::random();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let node = LeafNode::missing(encoded_locator, block_id);
     node.save(&mut tx, &parent).await.unwrap();
@@ -242,7 +242,7 @@ async fn save_missing_leaf_node_over_existing_present_one() {
     let encoded_locator = rand::random();
     let block_id = rand::random();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let node = LeafNode::present(encoded_locator, block_id);
     node.save(&mut tx, &parent).await.unwrap();
@@ -293,7 +293,7 @@ async fn compute_summary_from_complete_leaf_nodes_with_all_missing_blocks() {
     let nodes: LeafNodeSet = iter::once(node).collect();
     let hash = nodes.hash();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
     nodes.save(&mut tx, &hash).await.unwrap();
     let summary = InnerNode::compute_summary(&mut tx, &hash).await.unwrap();
     tx.commit().await.unwrap();
@@ -312,7 +312,7 @@ async fn compute_summary_from_complete_leaf_nodes_with_some_present_blocks() {
     let nodes: LeafNodeSet = vec![node0, node1, node2].into_iter().collect();
     let hash = nodes.hash();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
     nodes.save(&mut tx, &hash).await.unwrap();
     let summary = InnerNode::compute_summary(&mut tx, &hash).await.unwrap();
     tx.commit().await.unwrap();
@@ -330,7 +330,7 @@ async fn compute_summary_from_complete_leaf_nodes_with_all_present_blocks() {
     let nodes: LeafNodeSet = vec![node0, node1].into_iter().collect();
     let hash = nodes.hash();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
     nodes.save(&mut tx, &hash).await.unwrap();
     let summary = InnerNode::compute_summary(&mut tx, &hash).await.unwrap();
     tx.commit().await.unwrap();
@@ -383,7 +383,7 @@ async fn compute_summary_from_complete_inner_nodes_with_all_missing_blocks() {
 
     let hash = inners.hash();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
     inners.save(&mut tx, &hash).await.unwrap();
     let summary = InnerNode::compute_summary(&mut tx, &hash).await.unwrap();
     tx.commit().await.unwrap();
@@ -431,7 +431,7 @@ async fn compute_summary_from_complete_inner_nodes_with_some_present_blocks() {
         .collect();
     let hash = inners.hash();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
     inners.save(&mut tx, &hash).await.unwrap();
     let summary = InnerNode::compute_summary(&mut tx, &hash).await.unwrap();
     tx.commit().await.unwrap();
@@ -459,7 +459,7 @@ async fn compute_summary_from_complete_inner_nodes_with_all_present_blocks() {
 
     let hash = inners.hash();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
     inners.save(&mut tx, &hash).await.unwrap();
     let summary = InnerNode::compute_summary(&mut tx, &hash).await.unwrap();
     tx.commit().await.unwrap();
@@ -476,7 +476,7 @@ async fn set_present_on_leaf_node_with_missing_block() {
     let encoded_locator = rand::random();
     let block_id = rand::random();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let node = LeafNode::missing(encoded_locator, block_id);
     node.save(&mut tx, &parent).await.unwrap();
@@ -498,7 +498,7 @@ async fn set_present_on_leaf_node_with_present_block() {
     let encoded_locator = rand::random();
     let block_id = rand::random();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let node = LeafNode::present(encoded_locator, block_id);
     node.save(&mut tx, &parent).await.unwrap();
@@ -512,7 +512,7 @@ async fn set_present_on_leaf_node_that_does_not_exist() {
 
     let block_id = rand::random();
 
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     assert_matches!(
         LeafNode::set_present(&mut tx, &block_id).await,
@@ -532,7 +532,7 @@ async fn check_complete_case(leaf_count: usize, rng_seed: u64) {
     let mut rng = StdRng::seed_from_u64(rng_seed);
 
     let (_base_dir, pool) = db::create_temp().await.unwrap();
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let writer_id = PublicKey::generate(&mut rng);
     let write_keys = Keypair::generate(&mut rng);
@@ -606,7 +606,7 @@ fn summary(
 async fn summary_case(leaf_count: usize, rng_seed: u64) {
     let mut rng = StdRng::seed_from_u64(rng_seed);
     let (_base_dir, pool) = db::create_temp().await.unwrap();
-    let mut tx = pool.begin_write().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
 
     let writer_id = PublicKey::generate(&mut rng);
     let write_keys = Keypair::generate(&mut rng);

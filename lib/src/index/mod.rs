@@ -117,7 +117,7 @@ impl Index {
         // incoming node might become outdated. But because we already concluded it's up-to-date,
         // we end up inserting it anyway which breaks the invariant that a node inserted later must
         // be happens-after any node inserted earlier in the same branch.
-        let mut tx = self.pool.begin_write().await?;
+        let mut tx = self.pool.begin().await?;
 
         // If the received node is outdated relative to any branch we have, ignore it.
         let nodes: Vec<_> = RootNode::load_all_latest(&mut tx).try_collect().await?;
@@ -166,7 +166,7 @@ impl Index {
         nodes: CacheHash<InnerNodeMap>,
         receive_filter: &mut ReceiveFilter,
     ) -> Result<Vec<Hash>, ReceiveError> {
-        let mut tx = self.pool.begin_write().await?;
+        let mut tx = self.pool.begin().await?;
         let parent_hash = nodes.hash();
 
         self.check_parent_node_exists(&mut tx, &parent_hash).await?;
@@ -189,7 +189,7 @@ impl Index {
         &self,
         nodes: CacheHash<LeafNodeSet>,
     ) -> Result<Vec<BlockId>, ReceiveError> {
-        let mut tx = self.pool.begin_write().await?;
+        let mut tx = self.pool.begin().await?;
         let parent_hash = nodes.hash();
 
         self.check_parent_node_exists(&mut tx, &parent_hash).await?;
@@ -214,7 +214,7 @@ impl Index {
     // `remote_nodes`.
     async fn find_inner_nodes_with_new_blocks(
         &self,
-        tx: &mut db::WriteTransaction,
+        tx: &mut db::Transaction,
         remote_nodes: &InnerNodeMap,
         receive_filter: &mut ReceiveFilter,
     ) -> Result<Vec<Hash>> {
@@ -269,7 +269,7 @@ impl Index {
     // Updates summaries of the specified nodes and all their ancestors, commits the transaction
     // and notifies the affected branches that became complete (wasn't before the update but became
     // after it).
-    async fn update_summaries(&self, mut tx: db::WriteTransaction, hash: Hash) -> Result<()> {
+    async fn update_summaries(&self, mut tx: db::Transaction, hash: Hash) -> Result<()> {
         let statuses = node::update_summaries(&mut tx, hash).await?;
         tx.commit().await?;
 
