@@ -415,11 +415,7 @@ mod prune {
 /// Remove unreachable blocks
 mod trash {
     use super::*;
-    use crate::{
-        protocol::{BlockId, Bump},
-        store::{Changeset, ReadTransaction, WriteTransaction},
-    };
-    use futures_util::TryStreamExt;
+    use crate::{protocol::BlockId, store::WriteTransaction};
     use std::collections::BTreeSet;
 
     pub(super) async fn run(
@@ -442,7 +438,7 @@ mod trash {
             process_locked_blocks(shared, &mut unreachable_block_ids, unlock_tx).await?;
 
             traverse_root(shared, local_branch, &mut unreachable_block_ids).await?;
-            remove_unreachable_blocks(shared, local_branch, unreachable_block_ids).await?;
+            remove_unreachable_blocks(shared, unreachable_block_ids).await?;
         }
 
         Ok(())
@@ -581,7 +577,6 @@ mod trash {
 
     async fn remove_unreachable_blocks(
         shared: &Shared,
-        local_branch: Option<&Branch>,
         unreachable_block_ids: BTreeSet<BlockId>,
     ) -> Result<()> {
         // We need to delete the blocks and also mark them as missing (so they can be requested in
@@ -594,10 +589,6 @@ mod trash {
         let mut batch = Vec::with_capacity(BATCH_SIZE);
         let mut total_count = 0;
 
-        let local_branch_and_write_keys = local_branch
-            .as_ref()
-            .and_then(|branch| branch.keys().write().map(|keys| (branch, keys)));
-
         loop {
             batch.clear();
             batch.extend(unreachable_block_ids.by_ref().take(BATCH_SIZE));
@@ -607,51 +598,14 @@ mod trash {
             }
 
             let mut tx = shared.vault.store().begin_write().await?;
+            remove_blocks(&mut tx, &batch).await?;
+            tx.commit().await?;
 
             total_count += batch.len();
-
-            if let Some((local_branch, write_keys)) = &local_branch_and_write_keys {
-                let mut changeset = Changeset::new();
-                remove_local_nodes(&mut tx, &mut changeset, &batch).await?;
-                changeset.bump(Bump::increment(*local_branch.id()));
-                changeset
-                    .apply(&mut tx, local_branch.id(), write_keys)
-                    .await?;
-            }
-
-            remove_blocks(&mut tx, &batch).await?;
-
-            if let Some((branch, _)) = local_branch_and_write_keys {
-                // If we modified the local branch (by removing nodes from it), we need to notify,
-                // to let other replicas know about the change. Using `commit_and_then` to handle
-                // possible cancellation.
-                let event_tx = branch.notify();
-                tx.commit_and_then(move || event_tx.send()).await?
-            } else {
-                // Using regular `commit` here because if there is nothing to notify then we don't
-                // care about cancellation.
-                tx.commit().await?;
-            }
         }
 
         if total_count > 0 {
             tracing::debug!("unreachable blocks removed: {}", total_count);
-        }
-
-        Ok(())
-    }
-
-    async fn remove_local_nodes(
-        tx: &mut ReadTransaction,
-        changeset: &mut Changeset,
-        block_ids: &[BlockId],
-    ) -> Result<()> {
-        for block_id in block_ids {
-            let locators: Vec<_> = tx.load_locators(block_id).try_collect().await?;
-
-            for locator in locators {
-                changeset.unlink_block(locator, Some(*block_id));
-            }
         }
 
         Ok(())

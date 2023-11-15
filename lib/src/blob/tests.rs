@@ -10,6 +10,7 @@ use crate::{
     store::Store,
     test_utils,
 };
+use assert_matches::assert_matches;
 use proptest::collection::vec;
 use rand::{distributions::Standard, prelude::*};
 use tempfile::TempDir;
@@ -330,6 +331,18 @@ async fn truncate_to_empty() {
         .unwrap();
     assert_eq!(blob.len(), 0);
 
+    // Check blocks were deleted.
+    for locator in Locator::head(*blob.id())
+        .sequence()
+        .map(|locator| locator.encode(branch.keys().read()))
+        .take(block_count(content.len() as u64) as usize)
+    {
+        assert_matches!(
+            tx.find_block(branch.id(), &locator).await,
+            Err(store::Error::LocatorNotFound)
+        );
+    }
+
     let mut buffer = [0; 1];
     blob.seek(SeekFrom::Start(0));
     assert_eq!(blob.read_all(&mut tx, &mut buffer).await.unwrap(), 0);
@@ -372,6 +385,19 @@ async fn truncate_to_shorter() {
         .await
         .unwrap();
     assert_eq!(blob.len(), new_len as u64);
+
+    // Check blocks were deleted.
+    for locator in Locator::head(*blob.id())
+        .sequence()
+        .map(|locator| locator.encode(branch.keys().read()))
+        .skip(block_count(new_len as u64) as usize)
+        .take(block_count(content.len() as u64) as usize - block_count(new_len as u64) as usize)
+    {
+        assert_matches!(
+            tx.find_block(branch.id(), &locator).await,
+            Err(store::Error::LocatorNotFound)
+        );
+    }
 
     let mut buffer = vec![0; content.len()];
     blob.seek(SeekFrom::Start(0));

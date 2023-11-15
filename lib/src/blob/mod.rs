@@ -25,7 +25,7 @@ use crate::{
     },
     store::{self, Changeset, ReadTransaction},
 };
-use std::{io::SeekFrom, iter, mem};
+use std::{fmt, io::SeekFrom, iter, mem};
 use thiserror::Error;
 
 /// Size of the blob header in bytes.
@@ -484,6 +484,15 @@ impl Clone for Blob {
             len_modified: self.len_original,
             position: self.position,
         }
+    }
+}
+
+impl fmt::Debug for Blob {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Blob")
+            .field("branch", self.branch.id())
+            .field("id", &self.id)
+            .finish_non_exhaustive()
     }
 }
 

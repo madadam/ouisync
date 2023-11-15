@@ -4,7 +4,7 @@ use crate::{
     branch::BranchShared,
     db,
     event::EventSender,
-    store::Store,
+    store::{self, Store},
     test_utils,
 };
 use assert_matches::assert_matches;
@@ -88,6 +88,7 @@ async fn remove_file() {
     file.flush().await.unwrap();
 
     let file_vv = file.version_vector().await.unwrap();
+    let file_id = *file.blob_id();
     drop(file);
 
     // Reopen and remove the file
@@ -108,6 +109,17 @@ async fn remove_file() {
 
     assert_matches!(parent_dir.lookup(name), Ok(EntryRef::Tombstone(_)));
     assert_eq!(parent_dir.entries().count(), 1);
+
+    // Check the file blob was removed as well
+    assert_matches!(
+        Blob::open(
+            &mut branch.store().begin_read().await.unwrap(),
+            branch.clone(),
+            file_id,
+        )
+        .await,
+        Err(Error::Store(store::Error::LocatorNotFound))
+    );
 
     // Try re-creating the file again
     let mut parent_dir = branch
@@ -369,6 +381,7 @@ async fn remove_subdirectory() {
         .await
         .unwrap();
     let dir_vv = dir.version_vector().await.unwrap();
+    let dir_id = *dir.blob_id();
     drop(dir);
 
     // Reopen and remove the subdirectory
@@ -387,6 +400,17 @@ async fn remove_subdirectory() {
         .await
         .unwrap();
     assert_matches!(parent_dir.lookup(name), Ok(EntryRef::Tombstone(_)));
+
+    // Check the subdirectory blob was removed as well
+    assert_matches!(
+        Blob::open(
+            &mut branch.store().begin_read().await.unwrap(),
+            branch.clone(),
+            dir_id,
+        )
+        .await,
+        Err(Error::Store(store::Error::LocatorNotFound))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

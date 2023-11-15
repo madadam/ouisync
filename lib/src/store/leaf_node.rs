@@ -53,19 +53,6 @@ pub(super) fn load_parent_hashes<'a>(
         .err_into()
 }
 
-/// Loads all locators (most of the time (always?) there will be at most one) pointing to the
-/// block id.
-pub(super) fn load_locators<'a>(
-    conn: &'a mut db::Connection,
-    block_id: &'a BlockId,
-) -> impl Stream<Item = Result<Hash, Error>> + 'a {
-    sqlx::query("SELECT locator FROM snapshot_leaf_nodes WHERE block_id = ?")
-        .bind(block_id)
-        .fetch(conn)
-        .map_ok(|row| row.get(0))
-        .err_into()
-}
-
 /// Saves the node to the db unless it already exists.
 async fn save(tx: &mut db::WriteTransaction, node: &LeafNode, parent: &Hash) -> Result<(), Error> {
     sqlx::query(

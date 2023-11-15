@@ -407,13 +407,6 @@ impl Reader {
         leaf_node::load_children(self.db(), parent_hash).await
     }
 
-    pub fn load_locators<'a>(
-        &'a mut self,
-        block_id: &'a BlockId,
-    ) -> impl Stream<Item = Result<Hash, Error>> + 'a {
-        leaf_node::load_locators(self.db(), block_id)
-    }
-
     pub(super) fn missing_block_ids_in_branch<'a>(
         &'a mut self,
         branch_id: &'a PublicKey,
