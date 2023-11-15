@@ -388,6 +388,7 @@ impl Blob {
         tx: &mut ReadTransaction,
         changeset: &mut Changeset,
     ) -> Result<()> {
+        self.remove_truncated_blocks(changeset);
         self.write_len(tx, changeset).await?;
         self.write_blocks(changeset);
 
@@ -422,6 +423,21 @@ impl Blob {
             true
         } else {
             false
+        }
+    }
+
+    fn remove_truncated_blocks(&self, changeset: &mut Changeset) {
+        // Remove truncated blocks
+        if self.len_modified >= self.len_original {
+            return;
+        }
+        for locator in Locator::head(self.id)
+            .sequence()
+            .map(|locator| locator.encode(self.branch().keys().read()))
+            .skip(block_count(self.len_modified) as usize)
+            .take(block_count(self.len_original) as usize)
+        {
+            changeset.unlink_block(locator, None);
         }
     }
 

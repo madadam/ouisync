@@ -335,7 +335,8 @@ async fn truncate_to_empty() {
     for locator in Locator::head(*blob.id())
         .sequence()
         .map(|locator| locator.encode(branch.keys().read()))
-        .take(block_count(content.len() as u64) as usize)
+        .skip(1)
+        .take(block_count(content.len() as u64) as usize - 1)
     {
         assert_matches!(
             tx.find_block(branch.id(), &locator).await,
