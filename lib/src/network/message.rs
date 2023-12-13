@@ -56,6 +56,10 @@ pub(crate) enum Response {
     Block(BlockContent, BlockNonce, DebugResponse),
     /// Send that a Block request failed
     BlockError(BlockId, DebugResponse),
+    /// Send to signal the peer is choked.
+    /// NOTE: This is always unsolicited.
+    /// NOTE: unchoking is signalled implicitly by sending any other message.
+    Choked,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize, Debug)]

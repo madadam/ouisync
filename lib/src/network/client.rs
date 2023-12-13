@@ -195,7 +195,9 @@ impl Inner {
             // processed concurrently. Consider using a separate queue and a separate `select`
             // branch for it to speed things up.
 
-            let response = self.pending_requests.remove(response);
+            let Some(response) = self.pending_requests.remove(response) else {
+                continue;
+            };
 
             if self.recv_queue_tx.send(response).await.is_err() {
                 break;

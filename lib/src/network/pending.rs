@@ -59,31 +59,6 @@ impl ProcessedResponse {
     }
 }
 
-impl From<Response> for ProcessedResponse {
-    fn from(response: Response) -> Self {
-        match response {
-            Response::RootNode(proof, block_presence, debug) => {
-                Self::RootNode(proof, block_presence, debug)
-            }
-            Response::InnerNodes(nodes, disambiguator, debug) => {
-                Self::InnerNodes(nodes.into(), disambiguator, debug)
-            }
-            Response::LeafNodes(nodes, disambiguator, debug) => {
-                Self::LeafNodes(nodes.into(), disambiguator, debug)
-            }
-            Response::BlockOffer(block_id, debug) => Self::BlockOffer(block_id, debug),
-            Response::Block(content, nonce, debug) => {
-                Self::Block(Block::new(content, nonce), debug)
-            }
-            Response::RootNodeError(writer_id, debug) => Self::RootNodeError(writer_id, debug),
-            Response::ChildNodesError(hash, disambiguator, debug) => {
-                Self::ChildNodesError(hash, disambiguator, debug)
-            }
-            Response::BlockError(block_id, debug) => Self::BlockError(block_id, debug),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
 pub(crate) enum Key {
     RootNode(PublicKey),
@@ -99,9 +74,12 @@ pub(super) struct PendingRequests {
 
 impl PendingRequests {
     pub fn new(monitor: Arc<RepositoryMonitor>) -> Self {
+        let mut map = DelayMap::default();
+        map.pause(); // Start paused because every `Client` starts choked.
+
         Self {
             monitor,
-            map: Arc::new(BlockingMutex::new(DelayMap::default())),
+            map: Arc::new(BlockingMutex::new(map)),
         }
     }
 
@@ -160,13 +138,42 @@ impl PendingRequests {
         Some(request)
     }
 
-    pub fn remove(&self, response: Response) -> PendingResponse {
-        let response = ProcessedResponse::from(response);
+    pub fn remove(&self, response: Response) -> Option<PendingResponse> {
+        let mut map = self.map.lock().unwrap();
+
+        let response = match response {
+            Response::RootNode(proof, block_presence, debug) => {
+                ProcessedResponse::RootNode(proof, block_presence, debug)
+            }
+            Response::InnerNodes(nodes, disambiguator, debug) => {
+                ProcessedResponse::InnerNodes(nodes.into(), disambiguator, debug)
+            }
+            Response::LeafNodes(nodes, disambiguator, debug) => {
+                ProcessedResponse::LeafNodes(nodes.into(), disambiguator, debug)
+            }
+            Response::BlockOffer(block_id, debug) => ProcessedResponse::BlockOffer(block_id, debug),
+            Response::Block(content, nonce, debug) => {
+                ProcessedResponse::Block(Block::new(content, nonce), debug)
+            }
+            Response::RootNodeError(writer_id, debug) => {
+                ProcessedResponse::RootNodeError(writer_id, debug)
+            }
+            Response::ChildNodesError(hash, disambiguator, debug) => {
+                ProcessedResponse::ChildNodesError(hash, disambiguator, debug)
+            }
+            Response::BlockError(block_id, debug) => ProcessedResponse::BlockError(block_id, debug),
+            Response::Choked => {
+                map.pause();
+                return None;
+            }
+        };
+
+        // Receiving any other message than `Choked` implicitly unchokes.
+        map.resume();
+
         let key = response.to_key();
 
-        let (client_permit, block_promise) = if let Some(request_data) =
-            self.map.lock().unwrap().remove(&key)
-        {
+        let (client_permit, block_promise) = if let Some(request_data) = map.remove(&key) {
             request_removed(&self.monitor, &key, Some(request_data.timestamp));
 
             // We `drop` the `peer_permit` here but the `Client` will need the `client_permit` and
@@ -179,11 +186,11 @@ impl PendingRequests {
             (None, None)
         };
 
-        PendingResponse {
+        Some(PendingResponse {
             response,
             _client_permit: client_permit,
             block_promise,
-        }
+        })
     }
 }
 

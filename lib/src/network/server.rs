@@ -115,6 +115,7 @@ impl Inner {
                     choked = new_choked;
 
                     if choked {
+                        self.handle_choked().await;
                         continue;
                     }
 
@@ -301,6 +302,10 @@ impl Inner {
         }
 
         Ok(())
+    }
+
+    async fn handle_choked(&self) {
+        self.tx.send(Response::Choked).await;
     }
 
     async fn send_root_node(&self, root_node: RootNode) -> Result<()> {
