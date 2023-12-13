@@ -90,7 +90,7 @@ impl MessageBroker {
         &mut self,
         vault: Vault,
         pex: &PexController,
-        choke_manager: &choke::Manager,
+        choke_manager: choke::Manager,
     ) {
         let monitor = self.monitor.make_child(vault.monitor.name());
         let span = tracing::info_span!(
@@ -137,8 +137,6 @@ impl MessageBroker {
         let pex_discovery_tx = pex.discovery_sender();
         let pex_announcer = pex.announcer(self.that_runtime_id, self.dispatcher.connection_infos());
 
-        let choker = choke_manager.new_choker();
-
         tracing::info!(?role, "Link created");
 
         drop(span_enter);
@@ -154,7 +152,7 @@ impl MessageBroker {
                     pex_discovery_tx,
                     pex_announcer,
                     monitor,
-                    choker,
+                    choke_manager,
                 ) => (),
                 _ = abort_rx => (),
             }
@@ -195,7 +193,7 @@ async fn maintain_link(
     pex_discovery_tx: PexDiscoverySender,
     mut pex_announcer: PexAnnouncer,
     monitor: StateMonitor,
-    choker: choke::Choker,
+    choke_manager: choke::Manager,
 ) {
     #[derive(Debug)]
     enum State {
@@ -250,7 +248,7 @@ async fn maintain_link(
             request_limiter.clone(),
             pex_discovery_tx.clone(),
             &mut pex_announcer,
-            choker.clone(),
+            choke_manager.clone(),
         )
         .await
         {
@@ -286,7 +284,7 @@ async fn run_link(
     request_limiter: Arc<Semaphore>,
     pex_discovery_tx: PexDiscoverySender,
     pex_announcer: &mut PexAnnouncer,
-    choker: choke::Choker,
+    choke_manager: choke::Manager,
 ) -> ControlFlow {
     let (request_tx, request_rx) = mpsc::channel(1);
     let (response_tx, response_rx) = mpsc::channel(1);
@@ -295,7 +293,7 @@ async fn run_link(
     // Run everything in parallel:
     select! {
         flow = run_client(repo.clone(), content_tx.clone(), response_rx, request_limiter) => flow,
-        flow = run_server(repo.clone(), content_tx.clone(), request_rx, choker) => flow,
+        flow = run_server(repo.clone(), content_tx.clone(), request_rx, choke_manager) => flow,
         flow = recv_messages(stream, request_tx, response_tx, pex_discovery_tx) => flow,
         flow = send_messages(content_rx, sink) => flow,
         _ = pex_announcer.run(content_tx) => ControlFlow::Continue,
@@ -399,9 +397,9 @@ async fn run_server(
     repo: Vault,
     content_tx: mpsc::Sender<Content>,
     request_rx: mpsc::Receiver<Request>,
-    choker: choke::Choker,
+    choke_manager: choke::Manager,
 ) -> ControlFlow {
-    let mut server = Server::new(repo, content_tx, request_rx, choker);
+    let mut server = Server::new(repo, content_tx, request_rx, choke_manager);
 
     let result = server.run().await;
 

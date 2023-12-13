@@ -1,10 +1,6 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
-};
+use crate::collections::{HashMap, HashSet};
+use rand::seq::IteratorRandom;
+use std::sync::{Arc, Mutex};
 use tokio::{
     sync::Notify,
     time::{self, Duration, Instant},
@@ -14,6 +10,7 @@ const MAX_UNCHOKED_COUNT: usize = 3;
 const PERMIT_DURATION_TIMEOUT: Duration = Duration::from_secs(30);
 const PERMIT_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(3);
 
+#[derive(Clone)]
 pub(crate) struct Manager {
     inner: Arc<Mutex<ManagerInner>>,
 }
@@ -22,7 +19,7 @@ impl Manager {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(ManagerInner {
-                next_choker_id: AtomicUsize::new(0),
+                next_choker_id: 0,
                 choked: Default::default(),
                 unchoked: Default::default(),
                 notify: Arc::new(Notify::new()),
@@ -34,9 +31,10 @@ impl Manager {
     pub fn new_choker(&self) -> Choker {
         let mut inner = self.inner.lock().unwrap();
 
-        let id = inner.next_choker_id.fetch_add(1, Ordering::Relaxed);
+        let id = inner.next_choker_id;
+        inner.next_choker_id += 1;
 
-        inner.choked.insert(id, ChokedState::Uninterested);
+        inner.choked.insert(id);
 
         Choker {
             inner: Arc::new(ChokerInner {
@@ -47,12 +45,6 @@ impl Manager {
             choked: true,
         }
     }
-}
-
-#[derive(Eq, PartialEq)]
-enum ChokedState {
-    Interested,
-    Uninterested,
 }
 
 #[derive(Clone, Copy)]
@@ -88,115 +80,73 @@ impl Default for UnchokedState {
 }
 
 struct ManagerInner {
-    next_choker_id: AtomicUsize,
-    choked: HashMap<usize, ChokedState>,
+    next_choker_id: usize,
+    choked: HashSet<usize>,
     unchoked: HashMap<usize, UnchokedState>,
     notify: Arc<Notify>,
 }
 
-#[derive(Debug)]
-enum GetPermitResult {
-    Granted,
-    AwaitUntil(Instant),
-}
-
 impl ManagerInner {
-    /// Does this:
-    /// * If the `choker_id` is already unchoked it is granted a permit. Otherwise
-    /// * if there is a free slot in `unchoked`, adds `choker_id` into it and grants it a permit.
-    ///   Otherwise
-    /// * check if some of the `unchoked` chokers can be evicted, if so evict them and
-    ///   **some** choked choker takes its place. If the unchoked choker is `choker_id` then it
-    ///   is granted a permit. Othewise
-    /// * we calculate when the soonest unchoked choker is evictable and `choker_id` will
-    ///   need to recheck at that time.
-    fn get_permit(&mut self, choker_id: usize) -> GetPermitResult {
+    /// Tries to unchoke the given choker.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `choker_id` doesn't correspond to any existing choker.
+    fn try_unchoke(&mut self, choker_id: usize) -> Result<(), Instant> {
         if let Some(state) = self.unchoked.get_mut(&choker_id) {
             // It's unchoked, update permit and return.
             state.time_of_last_permit = Instant::now();
-            return GetPermitResult::Granted;
+            return Ok(());
         }
 
-        self.choked.insert(choker_id, ChokedState::Interested);
+        // Keep unchoking until we unchoke  `choker_id` or until we run out of unchoke slots.
+        loop {
+            let to_choke = if let Some((id, state)) = self.soonest_evictable() {
+                // All unchoke slots are occupied...
+                if state.is_evictable() {
+                    // ...but some can be evicted.
+                    Some(id)
+                } else {
+                    // ...and none can be evicted.
+                    return Err(state.evictable_at());
+                }
+            } else {
+                // Some unchoke slots are available.
+                None
+            };
 
-        // It's choked, check if we can unchoke something.
-        if self.unchoked.len() < MAX_UNCHOKED_COUNT || self.try_evict_from_unchoked() {
             // Unwrap OK because we know `choked` is not empty (`choker_id` is in it).
-            let to_unchoke = self.random_choked_and_interested().unwrap();
+            let to_unchoke = self.random_choked().unwrap();
 
-            assert!(self.choked.remove(&to_unchoke).is_some());
+            // Remove `to_choke` only after picking `to_unchoke`, otherwise it could be immediately
+            // unchoked again.
+            if let Some(to_choke) = to_choke {
+                self.unchoked.remove(&to_choke);
+                self.choked.insert(to_choke);
+            }
+
+            self.choked.remove(&to_unchoke);
             self.unchoked.insert(to_unchoke, UnchokedState::default());
 
-            // Notify both the choked (if any) and the unchoked one.
-            self.notify.notify_waiters();
-
             if to_unchoke == choker_id {
-                GetPermitResult::Granted
-            } else {
-                // Unwrap OK because we know `unchoked` is not empty.
-                let until = self.soonest_evictable().unwrap().1.evictable_at();
-                GetPermitResult::AwaitUntil(until)
+                return Ok(());
             }
-        } else {
-            // Unwrap OK because we know `unchoked` is not empty.
-            let until = self.soonest_evictable().unwrap().1.evictable_at();
-            GetPermitResult::AwaitUntil(until)
-        }
-    }
-
-    // Return true if some choker was evicted from `unchoked` and inserted into `choked`.
-    fn try_evict_from_unchoked(&mut self) -> bool {
-        let to_evict = if let Some((id, state)) = self.soonest_evictable() {
-            if state.is_evictable() {
-                Some(id)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        if let Some(to_evict) = to_evict {
-            self.unchoked.remove(&to_evict);
-            self.choked.insert(to_evict, ChokedState::Uninterested);
-            true
-        } else {
-            false
         }
     }
 
     fn soonest_evictable(&self) -> Option<(usize, UnchokedState)> {
-        let mut soonest: Option<(usize, UnchokedState)> = None;
-        for (id, state) in &self.unchoked {
-            let evictable_at = state.evictable_at();
-            if let Some(old_soonest) = soonest {
-                if evictable_at < old_soonest.1.evictable_at() {
-                    soonest = Some((*id, *state));
-                }
-            } else {
-                soonest = Some((*id, *state));
-            }
+        if self.unchoked.len() < MAX_UNCHOKED_COUNT {
+            None
+        } else {
+            self.unchoked
+                .iter()
+                .min_by_key(|(_, state)| state.evictable_at())
+                .map(|(id, state)| (*id, *state))
         }
-        soonest
     }
 
-    fn random_choked_and_interested(&self) -> Option<usize> {
-        use rand::Rng;
-
-        let mut interested = self
-            .choked
-            .iter()
-            .filter(|(_, state)| **state == ChokedState::Interested);
-
-        let count = interested.clone().count();
-
-        if count == 0 {
-            return None;
-        }
-
-        interested
-            .nth(rand::thread_rng().gen_range(0..count))
-            .map(|(id, _)| *id)
+    fn random_choked(&self) -> Option<usize> {
+        self.choked.iter().choose(&mut rand::thread_rng()).copied()
     }
 
     fn remove_choker(&mut self, choker_id: usize) {
@@ -220,33 +170,33 @@ impl Choker {
     /// once) is always choked.
     pub async fn changed(&mut self) -> bool {
         loop {
-            match (self.choked, self.get_permit()) {
-                (true, GetPermitResult::Granted) => {
+            match (self.choked, self.try_unchoke()) {
+                (true, Ok(())) => {
                     self.choked = false;
                     break;
                 }
-                (true, GetPermitResult::AwaitUntil(sleep_until)) => {
+                (true, Err(sleep_until)) => {
                     time::timeout_at(sleep_until, self.inner.notify.notified())
                         .await
                         .ok();
                 }
-                (false, GetPermitResult::Granted) => self.inner.notify.notified().await,
-                (false, GetPermitResult::AwaitUntil(_)) => {
+                (false, Ok(())) => self.inner.notify.notified().await,
+                (false, Err(_)) => {
                     self.choked = true;
                     break;
                 }
-            };
+            }
         }
 
         self.choked
     }
 
-    fn get_permit(&self) -> GetPermitResult {
+    fn try_unchoke(&self) -> Result<(), Instant> {
         self.inner
             .manager_inner
             .lock()
             .unwrap()
-            .get_permit(self.inner.id)
+            .try_unchoke(self.inner.id)
     }
 }
 
@@ -277,26 +227,43 @@ mod tests {
             .take(MAX_UNCHOKED_COUNT + 1)
             .collect();
 
-        // All but one get unchoked immediatelly.
-        for choker in &mut chokers[..MAX_UNCHOKED_COUNT] {
-            assert_eq!(choker.changed().now_or_never(), Some(false));
-        }
+        // All but one get unchoked immediately.
+        let mut choked_index = None;
 
-        // One gets unchoked after the timeout.
-        assert_eq!(chokers[MAX_UNCHOKED_COUNT].changed().now_or_never(), None);
-
-        assert!(!chokers[MAX_UNCHOKED_COUNT].changed().await);
-
-        // And another one gets choked instead.
-        let mut num_choked = 0;
-
-        for choker in &mut chokers[..MAX_UNCHOKED_COUNT] {
+        for (index, choker) in chokers.iter_mut().enumerate() {
             if let Some(choked) = choker.changed().now_or_never() {
-                assert!(choked);
-                num_choked += 1;
+                assert!(!choked);
+            } else {
+                assert!(choked_index.is_none());
+                choked_index = Some(index);
             }
         }
 
-        assert_eq!(num_choked, 1);
+        let choked_index = choked_index.unwrap();
+
+        // The choked one gets unchoked after the timeout...
+        assert!(!chokers[choked_index].changed().await);
+
+        // ...and another one gets choked instead.
+        let mut choked_index = None;
+
+        for (index, choker) in chokers.iter_mut().enumerate() {
+            if let Some(choked) = choker.changed().now_or_never() {
+                assert!(choked);
+                assert!(choked_index.is_none());
+                choked_index = Some(index);
+            }
+        }
+
+        let choked_index = choked_index.unwrap();
+
+        // Remove one of the unchoked. That immediately allows to unchoke the
+        // choked one.
+        let remove_index = (choked_index + 1) % chokers.len();
+        chokers.remove(remove_index);
+
+        let choked_index = choked_index - if remove_index < choked_index { 1 } else { 0 };
+
+        assert_eq!(chokers[choked_index].changed().now_or_never(), Some(false));
     }
 }

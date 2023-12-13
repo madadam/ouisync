@@ -1,5 +1,5 @@
 use super::{
-    choke::Choker,
+    choke,
     debug_payload::{DebugRequest, DebugResponse},
     message::{Content, Request, Response, ResponseDisambiguator},
 };
@@ -15,7 +15,7 @@ use futures_util::{
     stream::{self, FuturesUnordered},
     Stream, StreamExt, TryStreamExt,
 };
-use std::{collections::HashSet, pin::pin};
+use std::{collections::HashSet, future, pin::pin};
 use tokio::{
     select,
     sync::{
@@ -28,7 +28,6 @@ use tracing::instrument;
 pub(crate) struct Server {
     inner: Inner,
     rx: Receiver,
-    choker: Choker,
 }
 
 impl Server {
@@ -36,32 +35,32 @@ impl Server {
         vault: Vault,
         tx: mpsc::Sender<Content>,
         rx: mpsc::Receiver<Request>,
-        choker: Choker,
+        choke_manager: choke::Manager,
     ) -> Self {
         Self {
             inner: Inner {
                 vault,
                 tx: Sender(tx),
+                choke_manager,
             },
             rx,
-            choker,
         }
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        let Self { inner, rx, choker } = self;
-
-        inner.run(rx, choker).await
+        let Self { inner, rx } = self;
+        inner.run(rx).await
     }
 }
 
 struct Inner {
     vault: Vault,
+    choke_manager: choke::Manager,
     tx: Sender,
 }
 
 impl Inner {
-    async fn run(&self, rx: &mut Receiver, choker: &mut Choker) -> Result<()> {
+    async fn run(&self, rx: &mut Receiver) -> Result<()> {
         // Important: make sure to create the event subscription first, before calling
         // `handle_all_branches_changed` otherwise we might miss some events.
         let mut events = pin!(events(self.vault.event_tx.subscribe()));
@@ -72,6 +71,9 @@ impl Inner {
         // Note that this allows us to process each branch event only once even if we received
         // multiple events per particular branch.
         let mut accumulator = EventAccumulator::default();
+
+        // Start as choked but interested so that we can become unchoked as soon as possible.
+        let mut choker = Some(self.choke_manager.new_choker());
         let mut choked = true;
 
         // This is to handle multiple requests / events at once.
@@ -86,11 +88,22 @@ impl Inner {
         accumulator.insert(Event::Unknown);
 
         loop {
+            let choker_changed = async {
+                if let Some(choker) = &mut choker {
+                    choker.changed().await
+                } else {
+                    future::pending().await
+                }
+            };
+
             select! {
                 request = rx.recv(), if !choked => {
                     let Some(request)  = request else {
                         break;
                     };
+
+                    // TODO: remove choker on `Request::Uninterested`.
+                    choker.get_or_insert_with(|| self.choke_manager.new_choker());
 
                     let handler = self
                         .vault
@@ -111,7 +124,7 @@ impl Inner {
                         event_handlers.push(self.handle_event(event));
                     }
                 },
-                new_choked = choker.changed() => {
+                new_choked = choker_changed => {
                     choked = new_choked;
 
                     if choked {

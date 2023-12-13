@@ -287,7 +287,7 @@ impl Network {
 
         let mut network_state = self.inner.state.lock().unwrap();
 
-        network_state.create_link(handle.vault.clone(), &pex, &choke_manager);
+        network_state.create_link(handle.vault.clone(), &pex, choke_manager.clone());
 
         let key = network_state.registry.insert(RegistrationHolder {
             vault: handle.vault,
@@ -429,10 +429,10 @@ struct State {
 }
 
 impl State {
-    fn create_link(&mut self, repo: Vault, pex: &PexController, choke_manager: &choke::Manager) {
+    fn create_link(&mut self, repo: Vault, pex: &PexController, choke_manager: choke::Manager) {
         if let Some(brokers) = &mut self.message_brokers {
             for broker in brokers.values_mut() {
-                broker.create_link(repo.clone(), pex, choke_manager)
+                broker.create_link(repo.clone(), pex, choke_manager.clone())
             }
         }
     }
@@ -810,7 +810,7 @@ impl Inner {
                         broker.create_link(
                             holder.vault.clone(),
                             &holder.pex,
-                            &holder.choke_manager,
+                            holder.choke_manager.clone(),
                         );
                     }
 

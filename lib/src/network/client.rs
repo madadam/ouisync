@@ -21,6 +21,9 @@ use tokio::{
 };
 use tracing::{instrument, Level};
 
+/// Max number of responses to process in a single batch.
+const RESPONSE_BATCH_SIZE: usize = 64; // TODO: find optimal value
+
 pub(super) struct Client {
     inner: Inner,
     rx: mpsc::Receiver<Response>,
@@ -209,17 +212,24 @@ impl Inner {
         &self,
         recv_queue_rx: &mut mpsc::Receiver<PendingResponse>,
     ) -> Result<()> {
+        let mut batch = Vec::new();
+
         loop {
-            match recv_queue_rx.recv().await {
-                Some(response) => {
+            if recv_queue_rx
+                .recv_many(&mut batch, RESPONSE_BATCH_SIZE)
+                .await
+                > 0
+            {
+                for response in batch.drain(..) {
                     self.vault
                         .monitor
                         .handle_response_metric
                         .measure_ok(self.handle_response(response))
                         .await?
                 }
-                None => return Ok(()),
-            };
+            } else {
+                return Ok(());
+            }
         }
     }
 
