@@ -771,7 +771,7 @@ mod utils {
 
     /// Register and await unlock notifications.
     pub(super) mod unlock {
-        use crate::sync::AwaitDrop;
+        use crate::sync::drop::AwaitDrop;
         use futures_util::{stream::FuturesUnordered, StreamExt};
         use tokio::{select, sync::mpsc};
 

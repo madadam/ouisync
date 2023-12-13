@@ -5,7 +5,7 @@ use crate::{
     collections::{hash_map::Entry, HashMap},
     crypto::sign::PublicKey,
     deadlock::BlockingMutex,
-    sync::{AwaitDrop, DropAwaitable},
+    sync::drop::{AwaitDrop, DropAwaitable},
 };
 use std::sync::Arc;
 

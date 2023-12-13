@@ -25,7 +25,10 @@ pub(super) type PermitId = u64;
 // The issue is described in more detail here:
 //
 //   https://github.com/tokio-rs/tokio/issues/3757
-use crate::sync::{uninitialized_watch, AwaitDrop, DropAwaitable};
+use crate::sync::{
+    drop::{AwaitDrop, DropAwaitable},
+    uninitialized_watch,
+};
 
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
 pub enum PeerState {
