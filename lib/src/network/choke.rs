@@ -37,11 +37,9 @@ impl Manager {
         inner.choked.insert(id);
 
         Choker {
-            inner: Arc::new(ChokerInner {
-                manager_inner: self.inner.clone(),
-                id,
-                notify: inner.notify.clone(),
-            }),
+            manager_inner: self.inner.clone(),
+            notify: inner.notify.clone(),
+            id,
             choked: true,
         }
     }
@@ -156,9 +154,10 @@ impl ManagerInner {
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct Choker {
-    inner: Arc<ChokerInner>,
+    manager_inner: Arc<Mutex<ManagerInner>>,
+    notify: Arc<Notify>,
+    id: usize,
     choked: bool,
 }
 
@@ -176,11 +175,11 @@ impl Choker {
                     break;
                 }
                 (true, Err(sleep_until)) => {
-                    time::timeout_at(sleep_until, self.inner.notify.notified())
+                    time::timeout_at(sleep_until, self.notify.notified())
                         .await
                         .ok();
                 }
-                (false, Ok(())) => self.inner.notify.notified().await,
+                (false, Ok(())) => self.notify.notified().await,
                 (false, Err(_)) => {
                     self.choked = true;
                     break;
@@ -192,21 +191,11 @@ impl Choker {
     }
 
     fn try_unchoke(&self) -> Result<(), Instant> {
-        self.inner
-            .manager_inner
-            .lock()
-            .unwrap()
-            .try_unchoke(self.inner.id)
+        self.manager_inner.lock().unwrap().try_unchoke(self.id)
     }
 }
 
-struct ChokerInner {
-    manager_inner: Arc<Mutex<ManagerInner>>,
-    id: usize,
-    notify: Arc<Notify>,
-}
-
-impl Drop for ChokerInner {
+impl Drop for Choker {
     fn drop(&mut self) {
         self.manager_inner.lock().unwrap().remove_choker(self.id);
     }
