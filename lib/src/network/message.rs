@@ -20,6 +20,11 @@ pub(crate) enum Request {
     RootNode(PublicKey, DebugRequest),
     ChildNodes(Hash, ResponseDisambiguator, DebugRequest),
     Block(BlockId, DebugRequest),
+    /// Send to indicate that we've received and processed the respones to all sent requests so
+    /// far. The peer should choke us on receiving this.
+    /// NOTE: This doesn't have a response
+    /// NOTE: Interest is signalled implicitly, by sending any other message.
+    Uninterested,
 }
 
 /// ResponseDisambiguator is used to uniquelly assign a response to a request.

@@ -19,6 +19,7 @@ pub(crate) enum PendingRequest {
     RootNode(PublicKey, PendingDebugRequest),
     ChildNodes(Hash, ResponseDisambiguator, PendingDebugRequest),
     Block(BlockOffer, PendingDebugRequest),
+    Uninterested,
 }
 
 pub(super) struct PendingResponse {
@@ -110,6 +111,7 @@ impl PendingRequests {
                     Request::Block(block_id, debug.send()),
                 )
             }
+            PendingRequest::Uninterested => return None,
         };
 
         let mut map = self.map.lock().unwrap();
@@ -191,6 +193,10 @@ impl PendingRequests {
             _client_permit: client_permit,
             block_promise,
         })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.lock().unwrap().is_empty()
     }
 }
 

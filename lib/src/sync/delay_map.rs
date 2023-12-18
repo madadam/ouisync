@@ -74,7 +74,6 @@ where
         self.items.len()
     }
 
-    #[allow(unused)] // TODO: remove this allow when we use this
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }

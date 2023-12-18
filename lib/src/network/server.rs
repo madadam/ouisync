@@ -102,8 +102,16 @@ impl Inner {
                         break;
                     };
 
-                    // TODO: remove choker on `Request::Uninterested`.
-                    choker.get_or_insert_with(|| self.choke_manager.new_choker());
+                    if let Request::Uninterested = request {
+                        tracing::debug!("Uninterested");
+                        choker = None;
+                        continue;
+                    }
+
+                    choker.get_or_insert_with(|| {
+                        tracing::debug!("Interested");
+                        self.choke_manager.new_choker()
+                    });
 
                     let handler = self
                         .vault
@@ -128,8 +136,11 @@ impl Inner {
                     choked = new_choked;
 
                     if choked {
+                        tracing::debug!("Choked");
                         self.handle_choked().await;
                         continue;
+                    } else {
+                        tracing::debug!("Unchoked");
                     }
 
                     for event in accumulator.drain() {
@@ -151,6 +162,7 @@ impl Inner {
                 self.handle_child_nodes(hash, disambiguator, debug).await
             }
             Request::Block(block_id, debug) => self.handle_block(block_id, debug).await,
+            Request::Uninterested => Ok(()),
         }
     }
 

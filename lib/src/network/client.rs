@@ -1,7 +1,7 @@
 use super::{
     constants::MAX_PENDING_RESPONSES,
     debug_payload::{DebugResponse, PendingDebugRequest},
-    message::{Content, Response, ResponseDisambiguator},
+    message::{Content, Request, Response, ResponseDisambiguator},
     pending::{PendingRequest, PendingRequests, PendingResponse, ProcessedResponse},
 };
 use crate::{
@@ -17,7 +17,10 @@ use crate::{
 use std::{pin::pin, sync::Arc, time::Instant};
 use tokio::{
     select,
-    sync::{mpsc, Semaphore},
+    sync::{
+        mpsc::{self, error::TryRecvError},
+        Semaphore,
+    },
 };
 use tracing::{instrument, Level};
 
@@ -154,31 +157,42 @@ impl Inner {
                 break;
             };
 
-            // Unwraps OK because we never `close()` the semaphores.
-            //
-            // NOTE that the order here is important, we don't want to block the other clients
-            // on this peer if we have too many responses queued up (which is what the
-            // `link_permit` is responsible for limiting)..
-            let link_permit = link_request_limiter.clone().acquire_owned().await.unwrap();
+            let request = match request {
+                PendingRequest::Uninterested => {
+                    // `Uninterested` has no response so doesn't need permits.
+                    Request::Uninterested
+                }
+                PendingRequest::RootNode(..)
+                | PendingRequest::ChildNodes(..)
+                | PendingRequest::Block(..) => {
+                    // NOTE that the order here is important, we don't want to block the other
+                    // clients on this peer if we have too many responses queued up (which is what
+                    // the `link_permit` is responsible for limiting)..
+                    // Unwraps OK because we never `close()` the semaphores.
 
-            let peer_permit = self
-                .peer_request_limiter
-                .clone()
-                .acquire_owned()
-                .await
-                .unwrap();
+                    let link_permit = link_request_limiter.clone().acquire_owned().await.unwrap();
+                    let peer_permit = self
+                        .peer_request_limiter
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .unwrap();
 
-            self.vault
-                .monitor
-                .request_queued_metric
-                .record(time_created.elapsed());
+                    self.vault
+                        .monitor
+                        .request_queued_metric
+                        .record(time_created.elapsed());
 
-            let Some(request) = self
-                .pending_requests
-                .insert(request, link_permit, peer_permit)
-            else {
-                // The same request is already in-flight.
-                continue;
+                    if let Some(request) =
+                        self.pending_requests
+                            .insert(request, link_permit, peer_permit)
+                    {
+                        request
+                    } else {
+                        // The same request is already in-flight.
+                        continue;
+                    }
+                }
             };
 
             *self.vault.monitor.total_requests_cummulative.get() += 1;
@@ -215,20 +229,35 @@ impl Inner {
         let mut batch = Vec::new();
 
         loop {
-            if recv_queue_rx
-                .recv_many(&mut batch, RESPONSE_BATCH_SIZE)
-                .await
-                > 0
-            {
-                for response in batch.drain(..) {
-                    self.vault
-                        .monitor
-                        .handle_response_metric
-                        .measure_ok(self.handle_response(response))
-                        .await?
+            loop {
+                match recv_queue_rx.try_recv() {
+                    Ok(response) => batch.push(response),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => return Ok(()),
                 }
-            } else {
-                return Ok(());
+
+                if batch.len() >= RESPONSE_BATCH_SIZE {
+                    break;
+                }
+            }
+
+            if batch.is_empty() {
+                if self.pending_requests.is_empty() {
+                    self.enqueue_request(PendingRequest::Uninterested);
+                }
+
+                if let Some(response) = recv_queue_rx.recv().await {
+                    batch.push(response);
+                    continue;
+                }
+            }
+
+            for response in batch.drain(..) {
+                self.vault
+                    .monitor
+                    .handle_response_metric
+                    .measure_ok(self.handle_response(response))
+                    .await?
             }
         }
     }
