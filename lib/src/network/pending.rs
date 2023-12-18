@@ -70,7 +70,7 @@ pub(crate) enum Key {
 
 pub(super) struct PendingRequests {
     monitor: Arc<RepositoryMonitor>,
-    map: Arc<BlockingMutex<DelayMap<Key, RequestData>>>,
+    inner: Arc<BlockingMutex<Inner>>,
 }
 
 impl PendingRequests {
@@ -80,7 +80,10 @@ impl PendingRequests {
 
         Self {
             monitor,
-            map: Arc::new(BlockingMutex::new(map)),
+            inner: Arc::new(BlockingMutex::new(Inner {
+                map,
+                was_empty: true,
+            })),
         }
     }
 
@@ -114,9 +117,9 @@ impl PendingRequests {
             PendingRequest::Uninterested => return None,
         };
 
-        let mut map = self.map.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
 
-        map.try_insert(key)?.insert(
+        inner.map.try_insert(key)?.insert(
             RequestData {
                 timestamp: Instant::now(),
                 block_promise,
@@ -126,12 +129,14 @@ impl PendingRequests {
             REQUEST_TIMEOUT,
         );
 
+        inner.was_empty = false;
+
         // The expiration tracker task is started each time an item is inserted into previously
         // empty map and stopped when the map becomes empty again.
-        if map.len() == 1 {
+        if inner.map.len() == 1 {
             task::spawn(run_expiration_tracker(
                 self.monitor.clone(),
-                self.map.clone(),
+                self.inner.clone(),
             ));
         }
 
@@ -141,7 +146,7 @@ impl PendingRequests {
     }
 
     pub fn remove(&self, response: Response) -> Option<PendingResponse> {
-        let mut map = self.map.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
 
         let response = match response {
             Response::RootNode(proof, block_presence, debug) => {
@@ -165,17 +170,17 @@ impl PendingRequests {
             }
             Response::BlockError(block_id, debug) => ProcessedResponse::BlockError(block_id, debug),
             Response::Choked => {
-                map.pause();
+                inner.map.pause();
                 return None;
             }
         };
 
         // Receiving any other message than `Choked` implicitly unchokes.
-        map.resume();
+        inner.map.resume();
 
         let key = response.to_key();
 
-        let (client_permit, block_promise) = if let Some(request_data) = map.remove(&key) {
+        let (client_permit, block_promise) = if let Some(request_data) = inner.map.remove(&key) {
             request_removed(&self.monitor, &key, Some(request_data.timestamp));
 
             // We `drop` the `peer_permit` here but the `Client` will need the `client_permit` and
@@ -195,8 +200,21 @@ impl PendingRequests {
         })
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.map.lock().unwrap().is_empty()
+    /// Returns whether the requests are currently empty and they've been non-empty for any period
+    /// of time since the last time this function was called.
+    pub fn became_empty(&self) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+
+        if !inner.map.is_empty() {
+            return false;
+        }
+
+        if !inner.was_empty {
+            inner.was_empty = true;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -222,11 +240,8 @@ fn request_removed(monitor: &RepositoryMonitor, key: &Key, timestamp: Option<Ins
     }
 }
 
-async fn run_expiration_tracker(
-    monitor: Arc<RepositoryMonitor>,
-    request_map: Arc<BlockingMutex<DelayMap<Key, RequestData>>>,
-) {
-    while let Some((key, _)) = expired(&request_map).await {
+async fn run_expiration_tracker(monitor: Arc<RepositoryMonitor>, inner: Arc<BlockingMutex<Inner>>) {
+    while let Some((key, _)) = expired(&inner).await {
         *monitor.request_timeouts.get() += 1;
         request_removed(&monitor, &key, None);
     }
@@ -234,16 +249,21 @@ async fn run_expiration_tracker(
 
 // Wait for the next expired request. This does not block the map so it can be inserted / removed
 // from while this is being awaited.
-async fn expired(map: &BlockingMutex<DelayMap<Key, RequestData>>) -> Option<(Key, RequestData)> {
-    future::poll_fn(|cx| Poll::Ready(ready!(map.lock().unwrap().poll_expired(cx)))).await
+async fn expired(inner: &BlockingMutex<Inner>) -> Option<(Key, RequestData)> {
+    future::poll_fn(|cx| Poll::Ready(ready!(inner.lock().unwrap().map.poll_expired(cx)))).await
 }
 
 impl Drop for PendingRequests {
     fn drop(&mut self) {
-        for (key, ..) in self.map.lock().unwrap().drain() {
+        for (key, ..) in self.inner.lock().unwrap().map.drain() {
             request_removed(&self.monitor, &key, None);
         }
     }
+}
+
+struct Inner {
+    map: DelayMap<Key, RequestData>,
+    was_empty: bool,
 }
 
 struct RequestData {

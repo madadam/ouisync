@@ -106,12 +106,10 @@ impl Inner {
                         tracing::debug!("Uninterested");
                         choker = None;
                         continue;
-                    }
-
-                    choker.get_or_insert_with(|| {
+                    } else if choker.is_none() {
                         tracing::debug!("Interested");
-                        self.choke_manager.new_choker()
-                    });
+                        choker = Some(self.choke_manager.new_choker());
+                    }
 
                     let handler = self
                         .vault

@@ -67,10 +67,6 @@ impl<T> Receiver<T> {
 
         Ok(new_set)
     }
-
-    pub fn is_closed(&self) -> bool {
-        self.watch_rx.is_closed()
-    }
 }
 
 impl<T> Drop for Receiver<T> {

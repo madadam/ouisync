@@ -14,7 +14,7 @@ use crate::{
     repository::{BlockRequestMode, Vault},
     store::{self, ReceiveFilter},
 };
-use std::{pin::pin, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 use tokio::{
     select,
     sync::{
@@ -107,45 +107,36 @@ impl Inner {
     ) -> Result<()> {
         self.receive_filter.reset().await?;
 
-        let mut reload_index_rx = self.vault.store().client_reload_index_tx.subscribe();
-        let mut block_offers = self.block_tracker.offers();
-
-        let mut send_requests = pin!(self.send_requests(send_queue_rx));
-
         // NOTE: It is important to keep `remove`ing requests from `pending_requests` in parallel
         // with response handling. It is because response handling may take a long time (e.g. due
         // to acquiring database write transaction if there are other write transactions currently
         // going on - such as when forking) and so waiting for it could cause some requests in
         // `pending_requests` to time out.
-        let mut enqueue_responses = pin!(self.enqueue_responses(rx));
-        let mut handle_responses = pin!(self.handle_responses(recv_queue_rx));
 
-        loop {
-            select! {
-                block_offer = block_offers.next() => {
-                    let debug = PendingDebugRequest::start();
-                    self.enqueue_request(PendingRequest::Block(block_offer, debug));
-                }
-                _ = &mut send_requests => break,
-                _ = &mut enqueue_responses => break,
-                result = &mut handle_responses => {
-                    result?;
-                    break;
-                }
-                result = reload_index_rx.changed(), if !reload_index_rx.is_closed() => {
-                    self.refresh_branches(result.ok().into_iter().flatten());
-                }
-            }
+        select! {
+            _ = self.run_enqueue_responses(rx) => Ok(()),
+            r = self.run_handle_responses(recv_queue_rx) => r,
+            r = self.run_enqueue_block_requests() => r,
+            _ = self.run_send_requests(send_queue_rx) => Ok(()),
+            _ = self.run_reload_index() => Ok(()),
         }
-
-        Ok(())
     }
 
     fn enqueue_request(&self, request: PendingRequest) {
         self.send_queue_tx.send((request, Instant::now())).ok();
     }
 
-    async fn send_requests(
+    async fn run_enqueue_block_requests(&self) -> ! {
+        let mut block_offers = self.block_tracker.offers();
+
+        loop {
+            let block_offer = block_offers.next().await;
+            let debug = PendingDebugRequest::start();
+            self.enqueue_request(PendingRequest::Block(block_offer, debug));
+        }
+    }
+
+    async fn run_send_requests(
         &self,
         send_queue_rx: &mut mpsc::UnboundedReceiver<(PendingRequest, Instant)>,
     ) {
@@ -201,7 +192,7 @@ impl Inner {
         }
     }
 
-    async fn enqueue_responses(&self, rx: &mut mpsc::Receiver<Response>) {
+    async fn run_enqueue_responses(&self, rx: &mut mpsc::Receiver<Response>) {
         loop {
             let Some(response) = rx.recv().await else {
                 break;
@@ -222,7 +213,7 @@ impl Inner {
         }
     }
 
-    async fn handle_responses(
+    async fn run_handle_responses(
         &self,
         recv_queue_rx: &mut mpsc::Receiver<PendingResponse>,
     ) -> Result<()> {
@@ -242,7 +233,7 @@ impl Inner {
             }
 
             if batch.is_empty() {
-                if self.pending_requests.is_empty() {
+                if self.pending_requests.became_empty() {
                     self.enqueue_request(PendingRequest::Uninterested);
                 }
 
@@ -502,6 +493,14 @@ impl Inner {
         self.vault
             .receive_block_not_found(block_id, &self.receive_filter)
             .await
+    }
+
+    async fn run_reload_index(&self) {
+        let mut reload_index_rx = self.vault.store().client_reload_index_tx.subscribe();
+
+        while let Ok(branch_ids) = reload_index_rx.changed().await {
+            self.refresh_branches(branch_ids);
+        }
     }
 
     // Request again the branches that became completed. This is to cover the following edge
