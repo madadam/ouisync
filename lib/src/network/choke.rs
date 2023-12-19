@@ -7,8 +7,7 @@ use tokio::{
 };
 
 const MAX_UNCHOKED_COUNT: usize = 3;
-const PERMIT_DURATION_TIMEOUT: Duration = Duration::from_secs(30);
-const PERMIT_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_UNCHOKED_DURATION: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub(crate) struct Manager {
@@ -48,7 +47,6 @@ impl Manager {
 #[derive(Clone, Copy)]
 struct UnchokedState {
     unchoke_started: Instant,
-    time_of_last_permit: Instant,
 }
 
 impl UnchokedState {
@@ -57,22 +55,14 @@ impl UnchokedState {
     }
 
     fn evictable_at(&self) -> Instant {
-        let i1 = self.unchoke_started + PERMIT_DURATION_TIMEOUT;
-        let i2 = self.time_of_last_permit + PERMIT_INACTIVITY_TIMEOUT;
-        if i1 < i2 {
-            i1
-        } else {
-            i2
-        }
+        self.unchoke_started + MAX_UNCHOKED_DURATION
     }
 }
 
 impl Default for UnchokedState {
     fn default() -> Self {
-        let now = Instant::now();
         Self {
-            unchoke_started: now,
-            time_of_last_permit: now,
+            unchoke_started: Instant::now(),
         }
     }
 }
@@ -91,9 +81,7 @@ impl ManagerInner {
     ///
     /// Panics if `choker_id` doesn't correspond to any existing choker.
     fn try_unchoke(&mut self, choker_id: usize) -> Result<(), Instant> {
-        if let Some(state) = self.unchoked.get_mut(&choker_id) {
-            // It's unchoked, update permit and return.
-            state.time_of_last_permit = Instant::now();
+        if self.unchoked.contains_key(&choker_id) {
             return Ok(());
         }
 
@@ -179,7 +167,9 @@ impl Choker {
                         .await
                         .ok();
                 }
-                (false, Ok(())) => self.notify.notified().await,
+                (false, Ok(())) => {
+                    self.notify.notified().await;
+                }
                 (false, Err(_)) => {
                     self.choked = true;
                     break;
@@ -236,11 +226,20 @@ mod tests {
         // ...and another one gets choked instead.
         let mut choked_index = None;
 
-        for (index, choker) in chokers.iter_mut().enumerate() {
-            if let Some(choked) = choker.changed().now_or_never() {
-                assert!(choked);
-                assert!(choked_index.is_none());
-                choked_index = Some(index);
+        // To find the newly choked we need to be repeat this up to `MAX_UNCHOKED_COUNT` times
+        // because calling `changed` on a recently choked might immediately unchoke it if there is
+        // still available unchoke slot.
+        for _ in 0..MAX_UNCHOKED_COUNT {
+            for (index, choker) in chokers.iter_mut().enumerate() {
+                if let Some(choked) = choker.changed().now_or_never() {
+                    assert!(choked);
+                    assert!(choked_index.is_none());
+                    choked_index = Some(index);
+                }
+            }
+
+            if choked_index.is_some() {
+                break;
             }
         }
 
