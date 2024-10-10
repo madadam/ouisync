@@ -174,6 +174,14 @@ impl Inner {
                         tracing::trace!(?block_id, "Received block error");
                         self.request_tracker.failure(MessageKey::Block(block_id));
                     }
+                    Response::Choke => {
+                        tracing::trace!("Received choke");
+                        self.request_tracker.choke();
+                    }
+                    Response::Unchoke => {
+                        tracing::trace!("Received unchoke");
+                        self.request_tracker.unchoke();
+                    }
                 }
 
                 if writable.len() >= RESPONSE_BATCH_SIZE {

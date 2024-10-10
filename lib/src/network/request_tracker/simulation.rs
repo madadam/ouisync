@@ -122,7 +122,9 @@ impl Simulation {
                             | Response::InnerNodes(..)
                             | Response::LeafNodes(..)
                             | Response::Block(..)
-                            | Response::BlockOffer(..) => None,
+                            | Response::BlockOffer(..)
+                            | Response::Choke
+                            | Response::Unchoke => None,
                         };
 
                         if let Some(key) = key {
@@ -265,7 +267,7 @@ impl TestClient {
             Response::BlockError(block_id, _debug_payload) => {
                 self.tracker_client.failure(MessageKey::Block(block_id));
             }
-            Response::BlockOffer(_block_id, _debug_payload) => unimplemented!(),
+            Response::BlockOffer(..) | Response::Choke | Response::Unchoke => unimplemented!(),
         };
 
         // Note: for simplicity, in this simulation we `commit` after every operation. To test
@@ -363,6 +365,7 @@ impl TestServer {
                         .push_back(Response::BlockError(block_id, debug_payload.reply()));
                 }
             }
+            Request::Idle => (),
         }
     }
 

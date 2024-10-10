@@ -400,6 +400,32 @@ mod duplicate_request_with_different_variant_on_the_same_client {
     }
 }
 
+#[tokio::test]
+async fn choking() {
+    let mut rng = StdRng::seed_from_u64(0);
+    let (tracker, mut worker) = build(TrafficMonitor::new(&NoopRecorder));
+    let (client_a, mut request_rx_a) = tracker.new_client();
+    let (client_b, mut request_rx_b) = tracker.new_client();
+    worker.step();
+
+    let request = Request::ChildNodes(rng.gen(), DebugRequest::start());
+
+    client_a.choke();
+    client_a.initial(CandidateRequest::new(request.clone()));
+    client_b.initial(CandidateRequest::new(request.clone()));
+    worker.step();
+
+    // The first client is choked so the request is sent to the second one.
+    assert_eq!(request_rx_a.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(
+        request_rx_b.try_recv(),
+        Ok(PendingRequest {
+            payload: request,
+            variant: RequestVariant::default()
+        })
+    );
+}
+
 /// Generate `count + 1` copies of the same snapshot. The first one will have all the blocks
 /// present (the "master copy"). The remaining ones will have some blocks missing but in such a
 /// way that every block is present in at least one of the snapshots.

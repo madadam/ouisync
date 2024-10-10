@@ -127,6 +127,24 @@ impl RequestTrackerClient {
             command_tx: self.command_tx.clone(),
         }
     }
+
+    /// Choke this client.
+    pub fn choke(&self) {
+        self.command_tx
+            .send(Command::Choke {
+                client_id: self.client_id,
+            })
+            .ok();
+    }
+
+    /// Unchoke this client.
+    pub fn unchoke(&self) {
+        self.command_tx
+            .send(Command::Unchoke {
+                client_id: self.client_id,
+            })
+            .ok();
+    }
 }
 
 impl Drop for RequestTrackerClient {
@@ -235,6 +253,7 @@ pub(super) enum MessageKey {
     RootNode(PublicKey, u64),
     ChildNodes(Hash),
     Block(BlockId),
+    Idle,
 }
 
 impl MessageKey {
@@ -242,6 +261,7 @@ impl MessageKey {
         match self {
             Self::RootNode(..) | Self::ChildNodes(..) => RequestKind::Index,
             Self::Block(..) => RequestKind::Block,
+            Self::Idle => RequestKind::Other,
         }
     }
 }
@@ -254,6 +274,7 @@ impl<'a> From<&'a Request> for MessageKey {
             } => MessageKey::RootNode(*writer_id, *cookie),
             Request::ChildNodes(hash, _) => MessageKey::ChildNodes(*hash),
             Request::Block(block_id, _) => MessageKey::Block(*block_id),
+            Request::Idle => MessageKey::Idle,
         }
     }
 }
@@ -299,7 +320,7 @@ impl Worker {
                 }
                 Some(expired) = self.timer.next() => {
                     let (client_id, request_key) = expired.into_inner();
-                    self.failure(client_id, request_key, FailureReason::Timeout);
+                    self.handle_failure(client_id, request_key, FailureReason::Timeout);
                 }
             }
         }
@@ -335,20 +356,20 @@ impl Worker {
                 self.timeout = timeout;
             }
             Command::HandleInitial { client_id, request } => {
-                self.initial(client_id, request);
+                self.handle_initial(client_id, request);
             }
             Command::HandleSuccess {
                 client_id,
                 request_key,
                 requests,
             } => {
-                self.success(client_id, request_key, requests);
+                self.handle_success(client_id, request_key, requests);
             }
             Command::HandleFailure {
                 client_id,
                 request_key,
             } => {
-                self.failure(client_id, request_key, FailureReason::Response);
+                self.handle_failure(client_id, request_key, FailureReason::Response);
             }
             Command::Resume {
                 request_key,
@@ -357,6 +378,8 @@ impl Worker {
             Command::Commit { client_id } => {
                 self.commit(client_id);
             }
+            Command::Choke { client_id } => self.choke(client_id),
+            Command::Unchoke { client_id } => self.unchoke(client_id),
         }
     }
 
@@ -385,14 +408,14 @@ impl Worker {
     }
 
     #[instrument(skip(self))]
-    fn initial(&mut self, client_id: ClientId, request: CandidateRequest) {
+    fn handle_initial(&mut self, client_id: ClientId, request: CandidateRequest) {
         // tracing::trace!("initial");
 
         self.insert_request(client_id, request, None)
     }
 
     #[instrument(skip(self))]
-    fn success(
+    fn handle_success(
         &mut self,
         client_id: ClientId,
         request_key: MessageKey,
@@ -430,9 +453,10 @@ impl Worker {
                     Some(mem::take(waiters))
                 }
                 RequestState::InFlight { .. }
-                | RequestState::Suspended { .. }
                 | RequestState::Complete { .. }
                 | RequestState::Committed
+                | RequestState::Suspended { .. }
+                | RequestState::Choked { .. }
                 | RequestState::Cancelled => None,
             };
 
@@ -474,7 +498,12 @@ impl Worker {
     }
 
     #[instrument(skip(self))]
-    fn failure(&mut self, client_id: ClientId, request_key: MessageKey, reason: FailureReason) {
+    fn handle_failure(
+        &mut self,
+        client_id: ClientId,
+        request_key: MessageKey,
+        reason: FailureReason,
+    ) {
         // tracing::trace!("failure");
 
         let Some(client_state) = self.clients.get_mut(&client_id) else {
@@ -496,6 +525,7 @@ impl Worker {
 
         let (sender_client_id, sender_client_state, waiters) = match node.value_mut() {
             RequestState::Suspended { waiters } => {
+                // TODO: find first unchoked
                 let Some(client_id) = waiters.pop_front() else {
                     return;
                 };
@@ -508,6 +538,7 @@ impl Worker {
             }
             RequestState::InFlight { .. }
             | RequestState::Complete { .. }
+            | RequestState::Choked { .. }
             | RequestState::Committed
             | RequestState::Cancelled => return,
         };
@@ -548,8 +579,9 @@ impl Worker {
                             sender_client_id, ..
                         } if *sender_client_id == client_id => true,
                         RequestState::Complete { .. }
-                        | RequestState::Suspended { .. }
                         | RequestState::InFlight { .. }
+                        | RequestState::Suspended { .. }
+                        | RequestState::Choked { .. }
                         | RequestState::Committed
                         | RequestState::Cancelled => false,
                     })
@@ -571,6 +603,51 @@ impl Worker {
                 *node.value_mut() = RequestState::Committed;
             }
         }
+    }
+
+    #[instrument(skip(self))]
+    fn choke(&mut self, client_id: ClientId) {
+        let Some(client_state) = self.clients.get_mut(&client_id) else {
+            return;
+        };
+
+        if client_state.choked {
+            return;
+        }
+
+        client_state.choked = true;
+
+        // "reborrow" as immutable.
+        let client_state = self.clients.get(&client_id).unwrap();
+
+        for node_key in client_state.requests.values().copied() {
+            let Some(node) = self.requests.get_mut(node_key) else {
+                continue;
+            };
+
+            match node.value() {
+                RequestState::InFlight {
+                    sender_client_id,
+                    sender_timer_key,
+                    sent_at,
+                    waiters,
+                } if *sender_client_id == client_id => {
+                    // If non-choked waiter exists, fallback to them, otherwise transition to `Choked`.
+                    todo!()
+                }
+                RequestState::InFlight { .. }
+                | RequestState::Complete { .. }
+                | RequestState::Suspended { .. }
+                | RequestState::Choked { .. }
+                | RequestState::Committed
+                | RequestState::Cancelled => (),
+            }
+        }
+    }
+
+    #[instrument(skip(self))]
+    fn unchoke(&mut self, client_id: ClientId) {
+        // ...
     }
 
     fn insert_request(
@@ -600,9 +677,10 @@ impl Worker {
         let (request_key, add) = if let Some(node) = self.requests.get(node_key) {
             let request_key = MessageKey::from(&node.request().payload);
             let add = match node.value() {
-                RequestState::Suspended { .. }
-                | RequestState::InFlight { .. }
+                RequestState::InFlight { .. }
                 | RequestState::Complete { .. }
+                | RequestState::Suspended { .. }
+                | RequestState::Choked { .. }
                 | RequestState::Cancelled => true,
                 RequestState::Committed => false,
             };
@@ -647,34 +725,50 @@ impl Worker {
         let children: Vec<_> = node.children().collect();
 
         if send {
-            match node.value_mut() {
+            let in_flight_waiters = match node.value_mut() {
                 RequestState::Suspended { waiters }
                 | RequestState::InFlight { waiters, .. }
                 | RequestState::Complete { waiters, .. } => {
                     waiters.push_back(client_id);
+                    None
                 }
-                RequestState::Committed => (),
-                RequestState::Cancelled => {
-                    *node.value_mut() = match initial_state {
-                        InitialRequestState::InFlight => {
-                            let timer_key =
-                                self.timer.insert((client_id, request_key), self.timeout);
-                            client_state.request_tx.send(node.request().clone()).ok();
-
-                            self.monitor.record(RequestEvent::Send, request_key.kind());
-
-                            RequestState::InFlight {
-                                sender_client_id: client_id,
-                                sender_timer_key: timer_key,
-                                sent_at: Instant::now(),
-                                waiters: VecDeque::new(),
-                            }
-                        }
-                        InitialRequestState::Suspended => RequestState::Suspended {
+                RequestState::Committed => None,
+                RequestState::Cancelled => match (initial_state, client_state.choked) {
+                    (InitialRequestState::InFlight, true) => {
+                        *node.value_mut() = RequestState::Choked {
                             waiters: [client_id].into(),
-                        },
-                    };
+                        };
+                        None
+                    }
+                    (InitialRequestState::InFlight, false) => Some(VecDeque::new()),
+                    (InitialRequestState::Suspended, _) => {
+                        *node.value_mut() = RequestState::Suspended {
+                            waiters: [client_id].into(),
+                        };
+                        None
+                    }
+                },
+                RequestState::Choked { waiters } => {
+                    if client_state.choked {
+                        waiters.push_back(client_id);
+                        None
+                    } else {
+                        Some(mem::take(waiters))
+                    }
                 }
+            };
+
+            if let Some(waiters) = in_flight_waiters {
+                let timer_key = self.timer.insert((client_id, request_key), self.timeout);
+                client_state.request_tx.send(node.request().clone()).ok();
+                self.monitor.record(RequestEvent::Send, request_key.kind());
+
+                *node.value_mut() = RequestState::InFlight {
+                    sender_client_id: client_id,
+                    sender_timer_key: timer_key,
+                    sent_at: Instant::now(),
+                    waiters,
+                };
             }
         }
 
@@ -703,7 +797,7 @@ impl Worker {
         let request_key = MessageKey::from(&request.payload);
 
         let waiters = match state {
-            RequestState::Suspended { waiters } => {
+            RequestState::Suspended { waiters } | RequestState::Choked { waiters } => {
                 remove_from_queue(waiters, &client_id);
 
                 if !waiters.is_empty() {
@@ -853,11 +947,18 @@ enum Command {
     Commit {
         client_id: ClientId,
     },
+    Choke {
+        client_id: ClientId,
+    },
+    Unchoke {
+        client_id: ClientId,
+    },
 }
 
 struct ClientState {
     request_tx: mpsc::UnboundedSender<PendingRequest>,
     requests: HashMap<MessageKey, GraphKey>,
+    choked: bool,
 }
 
 impl ClientState {
@@ -865,14 +966,13 @@ impl ClientState {
         Self {
             request_tx,
             requests: HashMap::default(),
+            choked: false,
         }
     }
 }
 
 #[derive(Debug)]
 enum RequestState {
-    /// This request is ready to be sent.
-    Suspended { waiters: VecDeque<ClientId> },
     /// This request is currently in flight
     InFlight {
         /// Client who's sending this request
@@ -893,6 +993,11 @@ enum RequestState {
         sender_client_id: ClientId,
         waiters: VecDeque<ClientId>,
     },
+    /// This request is suspended. It will be transitioned to `InFlight` when resumed.
+    Suspended { waiters: VecDeque<ClientId> },
+    /// This request is choked. It (together with all the other choked requests of the same client)
+    /// will be transitioned to `InFlight` when at least one of the waiting clients is unchoked.
+    Choked { waiters: VecDeque<ClientId> },
     /// The response to this request has been received and fully processed. This request won't be
     /// retried even when the sender client gets dropped.
     Committed,
@@ -903,7 +1008,6 @@ enum RequestState {
 impl RequestState {
     fn clients(&self) -> impl Iterator<Item = &ClientId> {
         match self {
-            Self::Suspended { waiters } => Some((None, waiters)),
             Self::InFlight {
                 sender_client_id,
                 waiters,
@@ -913,6 +1017,7 @@ impl RequestState {
                 sender_client_id,
                 waiters,
             } => Some((Some(sender_client_id), waiters)),
+            Self::Suspended { waiters } | Self::Choked { waiters } => Some((None, waiters)),
             Self::Committed | Self::Cancelled => None,
         }
         .into_iter()
