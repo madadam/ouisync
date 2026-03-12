@@ -1,0 +1,102 @@
+x-node: &node
+  build:
+    context: ./node
+    additional_contexts:
+      source: "../.."
+
+services:
+  router-1:
+    container_name: router-1
+    build: ./router
+    networks:
+      lan-1:
+        ipv4_address: "10.1.0.10"
+        interface_name: eth0
+      wan:
+        ipv4_address: "20.0.0.101"
+        interface_name: eth1
+    environment:
+      SUBNET_INTERNAL: "10.1.0.0/16"
+      ADDR_EXTERNAL:   "20.0.0.100"
+    cap_add:
+      - NET_ADMIN
+      - SYS_NICE
+
+  router-2:
+    container_name: router-2
+    build: ./router
+    networks:
+      lan-2:
+        ipv4_address: "10.2.0.10"
+        interface_name: eth0
+      wan:
+        ipv4_address: "20.0.0.102"
+        interface_name: eth1
+    environment:
+      SUBNET_INTERNAL: "10.2.0.0/16"
+      ADDR_EXTERNAL:   "20.0.0.200"
+    cap_add:
+      - NET_ADMIN
+      - SYS_NICE
+
+  node-1:
+    <<: *node
+    container_name: node-1
+    networks:
+      lan-1:
+        ipv4_address: "10.1.0.100"
+    environment:
+      ROUTER: "10.1.0.10"
+      SUBNET: "20.0.0.0/16"
+      OUISYNC_PEERS: "quic/20.0.0.103:33333"
+    cap_add:
+      - NET_ADMIN
+
+  node-2:
+    <<: *node
+    container_name: node-2
+    networks:
+      lan-2:
+        ipv4_address: "10.2.0.100"
+    environment:
+      ROUTER: "10.2.0.10"
+      SUBNET: "20.0.0.0/16"
+      # OUISYNC_PEERS: "quic/20.0.0.103:33333"
+    cap_add:
+      - NET_ADMIN
+
+  node-3:
+    <<: *node
+    container_name: node-3
+    networks:
+      wan:
+        ipv4_address: "20.0.0.103"
+    environment:
+      OUISYNC_PORT: 33333
+
+  # node-4:
+  #   <<: *node
+  #   container_name: node-4
+  #   networks:
+  #     wan:
+  #       ipv4_address: "20.0.0.104"
+  #   environment:
+  #     OUISYNC_PORT: 33333
+  #     OUISYNC_PEERS: "quic/20.0.0.103:33333"
+
+networks:
+  lan-1:
+    internal: true
+    ipam:
+      config:
+        - subnet: "10.1.0.0/16"
+  lan-2:
+    internal: true
+    ipam:
+      config:
+        - subnet: "10.2.0.0/16"
+  wan:
+    internal: true
+    ipam:
+      config:
+        - subnet: "20.0.0.0/16"

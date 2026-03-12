@@ -1,7 +1,9 @@
 bindings
 doc
+docker
+justfile
 target
+test
 tmp
 .git
 *.sublime-*
-justfile
