@@ -4,14 +4,14 @@ use std::{
     collections::{BTreeMap, BTreeSet, btree_map},
     sync::{
         Condvar, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
-pub(super) type Id = u64;
+pub(super) type Id = usize;
 
 pub(super) struct Timer<T> {
     inner: Mutex<Inner<T>>,

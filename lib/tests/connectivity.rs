@@ -1,6 +1,6 @@
 //! Test for connectivity under various network configurations and conditions
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 #[macro_use]
 mod common;

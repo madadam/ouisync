@@ -6,7 +6,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll, ready},
     time::Instant,
@@ -61,25 +61,25 @@ struct Throughputs {
 /// Counter of sent/received bytes
 #[derive(Default)]
 pub(super) struct ByteCounters {
-    tx: AtomicU64,
-    rx: AtomicU64,
+    tx: AtomicUsize,
+    rx: AtomicUsize,
 }
 
 impl ByteCounters {
     pub fn increment_tx(&self, by: u64) {
-        self.tx.fetch_add(by, Ordering::Relaxed);
+        self.tx.fetch_add(by.try_into().unwrap_or(usize::MAX), Ordering::Relaxed);
     }
 
     pub fn increment_rx(&self, by: u64) {
-        self.rx.fetch_add(by, Ordering::Relaxed);
+        self.rx.fetch_add(by.try_into().unwrap_or(usize::MAX), Ordering::Relaxed);
     }
 
     pub fn read_tx(&self) -> u64 {
-        self.tx.load(Ordering::Relaxed)
+        self.tx.load(Ordering::Relaxed) as u64
     }
 
     pub fn read_rx(&self) -> u64 {
-        self.rx.load(Ordering::Relaxed)
+        self.rx.load(Ordering::Relaxed) as u64
     }
 }
 

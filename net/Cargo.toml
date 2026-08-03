@@ -15,7 +15,7 @@ hex_fmt            = { workspace = true }
 num_enum           = { workspace = true }
 ouisync-macros     = { path = "../macros" }
 pin-project-lite   = { workspace = true }
-quinn              = "0.11.9"
+quinn              = "0.11.11"
 rand               = { workspace = true }
 rcgen              = { workspace = true }
 serde              = { workspace = true }
@@ -28,6 +28,9 @@ tokio              = { workspace = true, features = ["io-util", "macros", "net",
 tokio-util         = { workspace = true, features = ["compat"] }
 tracing            = { workspace = true }
 yamux              = "0.13.3"
+
+# fastbloom is an indirect dependency of quinn. We need >= 0.17 to fix compilation issues on MIPS
+fastbloom          = { version = "0.17", default-features = false }
 
 [dev-dependencies]
 anyhow             = { workspace = true }

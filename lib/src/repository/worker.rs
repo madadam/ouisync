@@ -779,7 +779,7 @@ mod utils {
     use futures_util::{Stream, StreamExt};
     use std::{
         pin::pin,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::atomic::{AtomicUsize, Ordering},
     };
     use tokio::select;
 
@@ -899,7 +899,7 @@ mod utils {
     }
 
     #[derive(Default)]
-    pub(super) struct Counter(AtomicU64);
+    pub(super) struct Counter(AtomicUsize);
 
     impl Counter {
         pub fn new() -> Self {
@@ -907,7 +907,7 @@ mod utils {
         }
 
         pub fn get(&self) -> u64 {
-            self.0.load(Ordering::Relaxed)
+            self.0.load(Ordering::Relaxed) as u64
         }
 
         pub fn increment(&self) {

@@ -5,7 +5,7 @@ use metrics::{
 use state_monitor::{MonitoredValue, StateMonitor};
 use std::{
     fmt,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -129,7 +129,7 @@ impl TrafficMonitor {
 pub(crate) struct JobMonitor {
     name: String,
     count_running_tx: watch::Sender<usize>,
-    count_total: AtomicU64,
+    count_total: AtomicUsize,
     time: Histogram,
 }
 
@@ -182,7 +182,7 @@ impl JobMonitor {
         Self {
             name: name.to_string(),
             count_running_tx,
-            count_total: AtomicU64::new(0),
+            count_total: AtomicUsize::new(0),
             time,
         }
     }

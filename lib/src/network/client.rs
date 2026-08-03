@@ -769,15 +769,15 @@ impl Drop for ScopedProcessingRecorder<'_> {
 // Generate cookie for the next `RootNode` request. This value is guaranteed to be non-zero (zero is
 // used for unsolicited responses).
 fn next_root_node_cookie() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static NEXT: AtomicU64 = AtomicU64::new(1);
+    static NEXT: AtomicUsize = AtomicUsize::new(1);
 
     loop {
         let next = NEXT.fetch_add(1, Ordering::Relaxed);
 
         if next != 0 {
-            break next;
+            break next as u64;
         }
     }
 }

@@ -3,7 +3,7 @@ use ouisync_macros::api;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     mem,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 use thiserror::Error;
 
@@ -14,8 +14,8 @@ pub struct MessageId(u64);
 
 impl MessageId {
     pub fn next() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed) as u64)
     }
 }
 

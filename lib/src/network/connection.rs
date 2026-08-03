@@ -12,7 +12,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::SystemTime,
 };
@@ -125,8 +125,8 @@ pub(super) struct ConnectionId(u64);
 
 impl ConnectionId {
     pub fn next() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed) as u64)
     }
 }
 
