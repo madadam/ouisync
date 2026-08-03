@@ -129,7 +129,7 @@ impl ObservableDht {
         }
     }
 
-    /// Waits until the DHT becomes enabled. Note: calling `started_or_diabled` afterwards might
+    /// Waits until the DHT becomes enabled. Note: calling `started_or_disabled` afterwards might
     /// still return `None` if the DHT has been disabled in the meantime.
     pub async fn enabled(&self) {
         loop {

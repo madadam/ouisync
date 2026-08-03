@@ -9,7 +9,7 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
 /// Similar to tokio::sync::watch, but has no initial value. Because there is no initial value the
-/// API must be sligthly different. In particular, we don't have the `borrow` function.
+/// API must be slightly different. In particular, we don't have the `borrow` function.
 pub mod uninitialized_watch {
     use tokio::sync::watch as w;
     pub use w::error::RecvError;
@@ -233,14 +233,14 @@ pub(crate) mod stream {
     }
 
     pin_project! {
-        /// Rate-limitting stream adapter.
+        /// Rate-limiting stream adapter.
         ///
         /// ```ignore
         /// in:       |a|a|a|a|a| | | | | |a|a|a|a| | | |
         /// throttle: |a| |a| |a| | | | | |a| |a| |a| | |
         /// ```
         ///
-        /// Multiple occurences of the same item within the rate-limit period are reduced to a
+        /// Multiple occurrences of the same item within the rate-limit period are reduced to a
         /// single one but distinct items are preserved:
         ///
         /// ```ignore
