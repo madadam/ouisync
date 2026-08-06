@@ -55,9 +55,6 @@ hex_fmt = "0.3.0"
 hmac = { version = "0.12.1", default-features = false }
 indexmap = "2.12.1"
 libc = "0.2.174"
-metrics = "0.24.6"
-metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
-metrics-util = { version = "0.20.4", default-features = false }
 num_enum = { version = "0.7.5", default-features = false }
 pem = "3.0.6"
 pin-project-lite = "0.2.16"
@@ -88,6 +85,25 @@ tracing-subscriber = { version = "0.3.22" }
 webpki-roots = "1.0.4"
 winapi = { version = "0.3.9" }
 
+# TODO: switch to normal release of these metrics crates when the next version (> 0.18.3) of
+# `metrics-exporter-prometheus` is released.
+[workspace.dependencies.metrics]
+version = "0.24.6"
+git = "https://github.com/metrics-rs/metrics.git"
+ref = "bf1729badcde1f10dd1c7abeea5c26ac2a2153f2"
+
+[workspace.dependencies.metrics-exporter-prometheus]
+version = "0.18.3"
+git = "https://github.com/metrics-rs/metrics.git"
+ref = "bf1729badcde1f10dd1c7abeea5c26ac2a2153f2"
+default-features = false
+
+[workspace.dependencies.metrics-util]
+version = "0.20.4"
+git = "https://github.com/metrics-rs/metrics.git"
+ref = "bf1729badcde1f10dd1c7abeea5c26ac2a2153f2"
+default-features = false
+
 [profile.bench]
 # Enable debug info so we can profile the benches
 debug = 1
@@ -107,20 +123,6 @@ opt-level = 3
 # the upstream updates.
 xpc-connection     = { git = "https://github.com/madadam/xpc-connection-rs" }
 xpc-connection-sys = { git = "https://github.com/madadam/xpc-connection-rs" }
-
-# Fixes compilation for platforms lacking 64-bit atomics support
-metrics = {
-    git = "https://github.com/madadam/metrics.git",
-    branch = "prometheus-portable-atomics"
-}
-metrics-exporter-prometheus = {
-    git = "https://github.com/madadam/metrics.git",
-    branch = "prometheus-portable-atomics"
-}
-metrics-util = {
-    git = "https://github.com/madadam/metrics.git",
-    branch = "prometheus-portable-atomics"
-}
 
 [workspace.lints.clippy]
 large_enum_variant = "allow"

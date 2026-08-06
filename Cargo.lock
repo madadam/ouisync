@@ -2469,7 +2469,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 [[package]]
 name = "metrics"
 version = "0.24.6"
-source = "git+https://github.com/madadam/metrics.git?branch=prometheus-portable-atomics#59879b6f739c74624b7a8a6c4df7a4615c50563d"
+source = "git+https://github.com/metrics-rs/metrics.git#bf1729badcde1f10dd1c7abeea5c26ac2a2153f2"
 dependencies = [
  "portable-atomic",
  "rapidhash",
@@ -2478,7 +2478,7 @@ dependencies = [
 [[package]]
 name = "metrics-exporter-prometheus"
 version = "0.18.3"
-source = "git+https://github.com/madadam/metrics.git?branch=prometheus-portable-atomics#59879b6f739c74624b7a8a6c4df7a4615c50563d"
+source = "git+https://github.com/metrics-rs/metrics.git#bf1729badcde1f10dd1c7abeea5c26ac2a2153f2"
 dependencies = [
  "base64",
  "evmap",
@@ -2499,7 +2499,7 @@ dependencies = [
 [[package]]
 name = "metrics-util"
 version = "0.20.4"
-source = "git+https://github.com/madadam/metrics.git?branch=prometheus-portable-atomics#59879b6f739c74624b7a8a6c4df7a4615c50563d"
+source = "git+https://github.com/metrics-rs/metrics.git#bf1729badcde1f10dd1c7abeea5c26ac2a2153f2"
 dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
