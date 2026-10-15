@@ -22,7 +22,6 @@ use std::{
 };
 
 use anyhow::{Result, bail, format_err};
-use rand::{Rng, rngs::OsRng};
 use serde_json::{Map, json};
 use tempfile::TempDir;
 
@@ -47,7 +46,7 @@ fn main() -> Result<()> {
     let seed: u32 = if let Ok(seed) = env::var("SHADOW_SEED") {
         seed.parse()?
     } else {
-        OsRng.r#gen()
+        rand::random()
     };
     println!("SEED: {seed}");
 

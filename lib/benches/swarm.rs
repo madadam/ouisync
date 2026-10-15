@@ -12,7 +12,7 @@ use clap::Parser;
 use common::{DEFAULT_REPO, Env, Proto, actor, progress::ProgressReporter, sync_watch};
 use metrics::{Counter, Gauge, Recorder};
 use ouisync::{Access, AccessMode, File, Network, Repository, Stats};
-use rand::{Rng, SeedableRng, distributions::Standard, rngs::StdRng};
+use rand::{RngExt, SeedableRng, distr::StandardUniform, rngs::StdRng};
 use std::{
     fmt,
     fs::OpenOptions,
@@ -342,7 +342,7 @@ impl RandomChunks {
         chunk.clear();
         chunk.extend(
             (&mut self.rng)
-                .sample_iter::<u8, _>(Standard)
+                .sample_iter::<u8, _>(StandardUniform)
                 .take(chunk_size),
         );
 
