@@ -3072,6 +3072,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ouisync-rand-test-dir"
+version = "0.10.1"
+dependencies = [
+ "rand 0.10.3",
+]
+
+[[package]]
 name = "ouisync-repo-tool"
 version = "0.10.1"
 dependencies = [
