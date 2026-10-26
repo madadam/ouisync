@@ -2929,6 +2929,7 @@ dependencies = [
  "hex_fmt",
  "if-watch",
  "include_dir",
+ "libsqlite3-sys",
  "metrics 0.24.6",
  "metrics-exporter-prometheus",
  "metrics_ext",
