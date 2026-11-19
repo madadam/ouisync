@@ -23,7 +23,7 @@ use crate::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    slice,
+    mem, slice,
     sync::Arc,
 };
 
@@ -33,6 +33,10 @@ pub(crate) struct ClientWriter {
     block_expiration_tracker: Option<Arc<BlockExpirationTracker>>,
     quota: Option<StorageSize>,
     summary_updates: Vec<Hash>,
+    // Branches whose received root nodes inherited their final state (approved or rejected) from
+    // existing nodes with the same hash and so won't be picked up by `finalize_snapshots`.
+    approved_branches: Vec<PublicKey>,
+    rejected_branches: Vec<PublicKey>,
     new_blocks: Vec<BlockId>,
     block_id_cache: BlockIdCache,
     block_id_cache_updates: Vec<(Hash, BlockId)>,
@@ -51,6 +55,8 @@ impl ClientWriter {
             block_expiration_tracker,
             quota,
             summary_updates: Vec::new(),
+            approved_branches: Vec::new(),
+            rejected_branches: Vec::new(),
             new_blocks: Vec::new(),
             block_id_cache,
             block_id_cache_updates: Vec::new(),
@@ -88,6 +94,15 @@ impl ClientWriter {
                 RootNodeFilter::Published,
             )
             .await?;
+
+            // If a node with the same hash already exists, the new node inherits its state. If
+            // that state is final, the node won't be finalized again and so we need to report its
+            // branch as approved/rejected here, otherwise the branch change would go unnoticed.
+            match node.summary.state {
+                NodeState::Approved => self.approved_branches.push(node.proof.writer_id),
+                NodeState::Rejected => self.rejected_branches.push(node.proof.writer_id),
+                NodeState::Incomplete | NodeState::Complete => (),
+            }
 
             self.summary_updates.push(node.proof.hash);
         }
@@ -378,8 +393,8 @@ impl ClientWriter {
         let states = index::update_summaries(&mut self.db, &self.summary_updates).await?;
         self.summary_updates.clear();
 
-        let mut approved_branches = Vec::new();
-        let mut rejected_branches = Vec::new();
+        let mut approved_branches = mem::take(&mut self.approved_branches);
+        let mut rejected_branches = mem::take(&mut self.rejected_branches);
 
         for (hash, state) in states {
             match state {
@@ -713,6 +728,75 @@ mod tests {
                 .await
                 .unwrap()
                 .load_latest_approved_root_node(&local_id, RootNodeFilter::Any)
+                .await
+                .unwrap()
+                .summary
+                .state
+                .is_approved()
+        );
+    }
+
+    #[tokio::test]
+    async fn save_root_node_with_existing_hash_and_greater_vv() {
+        let mut rng = rand::rng();
+
+        let (_base_dir, pool) = db::create_temp().await.unwrap();
+        let store = Store::new(pool);
+        let secrets = WriteSecrets::generate(&mut rng);
+
+        let local_id = PublicKey::generate(&mut rng);
+        let remote_id = PublicKey::generate(&mut rng);
+
+        // Create one block locally
+        let block: Block = rng.random();
+        let locator = rng.random();
+
+        let mut tx = store.begin_write().await.unwrap();
+        let mut changeset = Changeset::new();
+
+        changeset.link_block(locator, block.id, SingleBlockPresence::Present);
+        changeset.write_block(block);
+        changeset
+            .apply(&mut tx, &local_id, &secrets.write_keys)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let root = store
+            .acquire_read()
+            .await
+            .unwrap()
+            .load_latest_approved_root_node(&local_id, RootNodeFilter::Any)
+            .await
+            .unwrap();
+
+        // Receive root node with the same hash as the local one, but from a different writer and
+        // with a greater vv (e.g., the remote replica merged our branch without any changes of
+        // its own).
+        let proof = Proof::new(
+            remote_id,
+            root.proof.version_vector.clone().incremented(remote_id),
+            root.proof.hash,
+            &secrets.write_keys,
+        );
+
+        let mut writer = store.begin_client_write().await.unwrap();
+        writer
+            .save_root_node(proof, &MultiBlockPresence::None)
+            .await
+            .unwrap();
+        let status = writer.commit().await.unwrap();
+
+        // The remote branch must be reported as approved, otherwise nobody would get notified about
+        // it.
+        assert_eq!(status.approved_branches, [remote_id]);
+
+        assert!(
+            store
+                .acquire_read()
+                .await
+                .unwrap()
+                .load_latest_approved_root_node(&remote_id, RootNodeFilter::Any)
                 .await
                 .unwrap()
                 .summary

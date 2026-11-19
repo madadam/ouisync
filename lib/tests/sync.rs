@@ -925,7 +925,6 @@ fn rename_directory_while_syncing() {
                 .run_until(
                     async {
                         loop {
-                            // Depending on whether
                             if content.is_empty() {
                                 let progress = repo.sync_progress().await.unwrap();
                                 if progress.total > 0 {
