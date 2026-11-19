@@ -1428,3 +1428,325 @@ async fn dump_directory_into(
 
     Ok(())
 }
+
+// Property test for the rules that local operations and merges must follow with regards to the
+// version vectors:
+//
+// 1. A local operation changes only the version of the local writer.
+// 2. A completed merge results in version vector that is exactly the merge of the version vectors
+//    of the inputs (no more, no less). A merge with conflicts must still not exceed it.
+// 3. Once all branches have merged each other (without conflicts), they all have the same version
+//    vector and the same content.
+mod vv_rules {
+    use super::*;
+    use rand::{RngExt, seq::IndexedRandom};
+    use test_strategy::proptest;
+
+    const WRITERS: usize = 3;
+
+    #[proptest(async = "tokio", cases = 64)]
+    async fn rules(
+        #[strategy(1usize..48)] step_count: usize,
+        #[strategy(test_utils::rng_seed_strategy())] rng_seed: u64,
+    ) {
+        case(step_count, rng_seed).await
+    }
+
+    async fn case(step_count: usize, rng_seed: u64) {
+        let mut rng = StdRng::seed_from_u64(rng_seed);
+        let (_base_dir, branches) =
+            setup_with_rng::<WRITERS>(StdRng::seed_from_u64(rng.random())).await;
+
+        for branch in &branches {
+            branch.open_or_create_root().await.unwrap();
+        }
+
+        let mut counter = 0;
+
+        for step in 0..step_count {
+            let i = rng.random_range(0..WRITERS);
+
+            if rng.random_bool(0.4) {
+                let others: Vec<_> = (0..WRITERS)
+                    .filter(|j| *j != i && rng.random_bool(0.6))
+                    .collect();
+                if others.is_empty() {
+                    continue;
+                }
+
+                check_merge(&branches, i, &others, &format!("step {step}")).await;
+            } else {
+                counter += 1;
+                check_local_op(&mut rng, &branches[i], i, counter, &format!("step {step}")).await;
+            }
+        }
+
+        // Settle: everyone merges everyone until nothing changes.
+        let all: Vec<_> = (0..WRITERS).collect();
+
+        for round in 0..8 {
+            let mut changed = false;
+            let mut conflict = false;
+
+            for i in 0..WRITERS {
+                let others: Vec<_> = all.iter().copied().filter(|j| *j != i).collect();
+                match check_merge(&branches, i, &others, &format!("settle {round}")).await {
+                    MergeStatus::Completed => changed = true,
+                    MergeStatus::Conflict => conflict = true,
+                    MergeStatus::Unchanged => (),
+                }
+            }
+
+            if conflict {
+                // Conflicts are not resolved automatically, so the branches can't converge.
+                return;
+            }
+
+            if !changed {
+                // Rule 3: all branches converged to the same version vector and content.
+                //
+                // Note: comparing the trees rather than the root hashes because the hashes can
+                // differ due to unreachable nodes which haven't been garbage collected yet (no
+                // garbage collection runs in this test).
+                let mut trees = Vec::with_capacity(WRITERS);
+                for branch in &branches {
+                    trees.push((
+                        branch.version_vector().await.unwrap(),
+                        tree(&branch.open_or_create_root().await.unwrap()).await,
+                    ));
+                }
+
+                for (j, tree) in trees.iter().enumerate().skip(1) {
+                    assert_eq!(
+                        tree, &trees[0],
+                        "branch {j} and branch 0 didn't converge to the same version vector and \
+                         content"
+                    );
+                }
+
+                return;
+            }
+        }
+
+        panic!("branches didn't settle");
+    }
+
+    // Merge `others` into `branches[i]` and check rule 2.
+    async fn check_merge(
+        branches: &[Branch],
+        i: usize,
+        others: &[usize],
+        context: &str,
+    ) -> MergeStatus {
+        let inputs: Vec<_> = iter::once(i).chain(others.iter().copied()).collect();
+
+        let mut expected = VersionVector::new();
+        for j in &inputs {
+            expected.merge(&branches[*j].version_vector().await.unwrap());
+        }
+
+        let input_branches: Vec<_> = inputs.iter().map(|j| &branches[*j]).collect();
+        let status = match merge(&input_branches).await {
+            Ok(status) => status,
+            Err(error) => panic!("{context}: merge of {others:?} into {i} failed: {error:?}"),
+        };
+
+        let actual = branches[i].version_vector().await.unwrap();
+
+        match status {
+            MergeStatus::Completed | MergeStatus::Unchanged => assert_eq!(
+                actual, expected,
+                "{context}: merge of {others:?} into {i} ({status:?}) didn't result in the \
+                 merge of the inputs' version vectors"
+            ),
+            MergeStatus::Conflict => {
+                for (writer_id, version) in actual.entries() {
+                    assert!(
+                        version <= expected.get(writer_id),
+                        "{context}: merge of {others:?} into {i} (Conflict) raised the version of \
+                         {writer_id:?} to {version}, above the inputs ({expected:?})"
+                    );
+                }
+            }
+        }
+
+        status
+    }
+
+    // Perform a random local operation on `branch` and check rule 1.
+    async fn check_local_op(
+        rng: &mut StdRng,
+        branch: &Branch,
+        i: usize,
+        counter: usize,
+        context: &str,
+    ) {
+        let before = branch.version_vector().await.unwrap();
+        let op = local_op(rng, branch, i, counter).await;
+        let after = branch.version_vector().await.unwrap();
+
+        for (writer_id, version) in after.entries() {
+            if writer_id != branch.id() {
+                assert_eq!(
+                    version,
+                    before.get(writer_id),
+                    "{context}: local op `{op}` on branch {i} changed the version of another \
+                     writer {writer_id:?} (before: {before:?}, after: {after:?})"
+                );
+            }
+        }
+    }
+
+    // Returns description of the operation.
+    async fn local_op(rng: &mut StdRng, branch: &Branch, i: usize, counter: usize) -> String {
+        let root = branch.open_or_create_root().await.unwrap();
+        let (dirs, files) = collect(&root).await;
+
+        // Note: `dirs` always contains at least the root (empty path).
+        match rng.random_range(0..5) {
+            0 => {
+                let path = dirs.choose(rng).unwrap();
+                let mut dir = open_dir(&root, path).await;
+                let name = format!("f{i}-{counter}");
+                drop(create_file(&mut dir, &name, &rng.random::<[u8; 8]>()).await);
+                format!("create file {}", join(path, &name))
+            }
+            1 => {
+                let path = dirs.choose(rng).unwrap();
+                let mut dir = open_dir(&root, path).await;
+                let name = format!("d{i}-{counter}");
+                drop(
+                    dir.create_directory(name.clone(), rng.random(), &VersionVector::new())
+                        .await
+                        .unwrap(),
+                );
+                format!("create dir {}", join(path, &name))
+            }
+            2 if !files.is_empty() => {
+                let path = files.choose(rng).unwrap();
+                let (parent, name) = path.split_at(path.len() - 1);
+                let dir = open_dir(&root, parent).await;
+                let mut file = dir.lookup(&name[0]).unwrap().file().unwrap().open().await.unwrap();
+                file.write_all(&rng.random::<[u8; 8]>()).await.unwrap();
+                file.flush().await.unwrap();
+                format!("modify file {}", path.join("/"))
+            }
+            3 if dirs.len() > 1 || !files.is_empty() => {
+                // Move a random entry (file or non-root directory) into a random directory which
+                // is not the entry itself or its descendant.
+                let candidates: Vec<_> = dirs.iter().skip(1).chain(files.iter()).collect();
+                let src = *candidates.choose(rng).unwrap();
+                let dst_candidates: Vec<_> =
+                    dirs.iter().filter(|d| !d.starts_with(src)).collect();
+                let dst_parent = *dst_candidates.choose(rng).unwrap();
+
+                let (src_parent, src_name) = src.split_at(src.len() - 1);
+                let src_name = &src_name[0];
+                let dst_name = format!("m{i}-{counter}");
+
+                let mut src_dir = open_dir(&root, src_parent).await;
+                let mut dst_dir = open_dir(&root, dst_parent).await;
+
+                // Same as in `Repository::move_entry` (the dst name is always new here).
+                let src_data = src_dir.lookup(src_name).unwrap().clone_data();
+                let dst_vv = src_data
+                    .version_vector()
+                    .clone()
+                    .incremented(*branch.id());
+
+                src_dir
+                    .move_entry(src_name, src_data, &mut dst_dir, &dst_name, dst_vv)
+                    .await
+                    .unwrap();
+
+                format!("move {} -> {}", src.join("/"), join(dst_parent, &dst_name))
+            }
+            4 if dirs.len() > 1 || !files.is_empty() => {
+                let candidates: Vec<_> = dirs.iter().skip(1).chain(files.iter()).collect();
+                let path = *candidates.choose(rng).unwrap();
+                let (parent, name) = path.split_at(path.len() - 1);
+                let dir = open_dir(&root, parent).await;
+                JointDirectory::new(Some(branch.clone()), [dir])
+                    .remove_entry_recursively(&name[0])
+                    .await
+                    .unwrap();
+                format!("remove {}", path.join("/"))
+            }
+            _ => "noop".to_owned(),
+        }
+    }
+
+    // Returns paths of all directories (including the root as an empty path) and all files in the
+    // given directory tree, ignoring tombstones.
+    async fn collect(root: &Directory) -> (Vec<Vec<String>>, Vec<Vec<String>>) {
+        let mut dirs = vec![Vec::new()];
+        let mut files = Vec::new();
+        let mut stack = vec![(Vec::<String>::new(), root.clone())];
+
+        while let Some((path, dir)) = stack.pop() {
+            for entry in dir.entries() {
+                let mut entry_path = path.clone();
+                entry_path.push(entry.name().to_owned());
+
+                match entry {
+                    EntryRef::File(_) => files.push(entry_path),
+                    EntryRef::Directory(entry) => {
+                        let subdir = entry.open(DirectoryFallback::Disabled).await.unwrap();
+                        dirs.push(entry_path.clone());
+                        stack.push((entry_path, subdir));
+                    }
+                    EntryRef::Tombstone(_) => (),
+                }
+            }
+        }
+
+        (dirs, files)
+    }
+
+    // Returns (path, entry) for every entry in the given directory tree, including tombstones.
+    async fn tree(root: &Directory) -> Vec<(String, crate::directory::EntryData)> {
+        let mut out = Vec::new();
+        let mut stack = vec![(String::new(), root.clone())];
+
+        while let Some((path, dir)) = stack.pop() {
+            for entry in dir.entries() {
+                let entry_path = format!("{path}/{}", entry.name());
+
+                if let EntryRef::Directory(entry) = &entry {
+                    stack.push((
+                        entry_path.clone(),
+                        entry.open(DirectoryFallback::Disabled).await.unwrap(),
+                    ));
+                }
+
+                out.push((entry_path, entry.clone_data()));
+            }
+        }
+
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    async fn open_dir(root: &Directory, path: &[String]) -> Directory {
+        let mut dir = root.clone();
+        for name in path {
+            dir = dir
+                .lookup(name)
+                .unwrap()
+                .directory()
+                .unwrap()
+                .open(DirectoryFallback::Disabled)
+                .await
+                .unwrap();
+        }
+        dir
+    }
+
+    fn join(path: &[String], name: &str) -> String {
+        path.iter()
+            .map(String::as_str)
+            .chain(iter::once(name))
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+}
