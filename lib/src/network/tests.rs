@@ -287,7 +287,6 @@ async fn failed_block_same_peer() {
 // This test verifies that when there are two peers that have a particular block, even when one of
 // them drops, we can still succeed in retrieving the block from the remaining peer.
 #[tokio::test]
-#[ignore = "request tracker is not cancel safe"]
 async fn failed_block_other_peer() {
     test_utils::init_log();
 

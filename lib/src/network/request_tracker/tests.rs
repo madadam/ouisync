@@ -869,9 +869,161 @@ async fn update_request_with_children_of_different_variants() {
 
 // TODO: test idle after failures
 
-/// Generate `count + 1` copies of the same snapshot. The first one will have all the blocks
-/// present (the "master copy"). The remaining ones will have some blocks missing but in such a
-/// way that every block is present in at least one of the snapshots.
+// A block request is in flight to a peer which then leaves. Another peer has the same snapshot
+// and so could provide the block. That peer must end up requesting either the parent node (the
+// one whose response produced the block request) or the block itself, otherwise the block is never
+// received.
+//
+//     root_a   root_b     (root node responses from peer `a` and peer `b`)
+//         \     /
+//           p             (child nodes request, completed and committed by `a`)
+//           |
+//           x             (block request, in flight to `a`)
+//
+mod sender_of_in_flight_block_leaves {
+    use std::slice;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn other_peer_responds_before_with_same_variant() {
+        case(Order::OtherPeerFirst, false).await
+    }
+
+    #[tokio::test]
+    async fn other_peer_responds_before_with_different_variant() {
+        case(Order::OtherPeerFirst, true).await
+    }
+
+    #[tokio::test]
+    async fn other_peer_responds_after_with_same_variant() {
+        case(Order::SenderLeavesFirst, false).await
+    }
+
+    #[tokio::test]
+    async fn other_peer_responds_after_with_different_variant() {
+        case(Order::SenderLeavesFirst, true).await
+    }
+
+    enum Order {
+        // The other peer's root node response arrives before the sender leaves.
+        OtherPeerFirst,
+        // The sender leaves before the other peer's root node response arrives.
+        SenderLeavesFirst,
+    }
+
+    async fn case(order: Order, different_variants: bool) {
+        crate::test_utils::init_log();
+
+        let mut rng = StdRng::seed_from_u64(0);
+        let (tracker, mut worker) = build(TrafficMonitor::new(&NoopRecorder));
+        let (client_a, mut request_rx_a) = tracker.new_client();
+        let (client_b, mut request_rx_b) = tracker.new_client();
+
+        let writer_id = PublicKey::generate(&mut rng);
+        let root_key_a = MessageKey::RootNode(writer_id, 0);
+        let root_key_b = MessageKey::RootNode(writer_id, 1);
+        let parent_request = Request::ChildNodes(rng.random(), DebugRequest::start());
+        let parent_key = MessageKey::from(&parent_request);
+        let block_request = Request::Block(rng.random(), DebugRequest::start());
+        let block_key = MessageKey::from(&block_request);
+
+        // The variant of the parent request depends on the block presence of the peer it's sent
+        // to.
+        let variant_a = RequestVariant(1);
+        let variant_b = if different_variants {
+            RequestVariant(2)
+        } else {
+            variant_a
+        };
+
+        // Peer `a` sends its root node which leads to the parent request.
+        client_a.receive(root_key_a);
+        client_a.success(
+            root_key_a,
+            vec![CandidateRequest::new(parent_request.clone()).variant(variant_a)],
+        );
+        worker.step();
+        assert_eq!(
+            drain(&mut worker, &mut request_rx_a),
+            slice::from_ref(&parent_request)
+        );
+
+        // The response to the parent request offers the block. Commit it.
+        client_a.receive(parent_key);
+        client_a.success(
+            parent_key,
+            vec![CandidateRequest::new(block_request.clone()).suspended()],
+        );
+        client_a.new_committer().commit();
+        worker.step();
+
+        // The block becomes required, so request it from `a`.
+        client_a.resume(block_key, RequestVariant::default());
+        worker.step();
+        assert_eq!(
+            drain(&mut worker, &mut request_rx_a),
+            slice::from_ref(&block_request)
+        );
+
+        let mut requests_b = Vec::new();
+
+        let mut other_peer_responds = |worker: &mut Worker, requests_b: &mut Vec<Request>| {
+            // Peer `b` sends its root node which leads to the same parent request.
+            client_b.receive(root_key_b);
+            client_b.success(
+                root_key_b,
+                vec![CandidateRequest::new(parent_request.clone()).variant(variant_b)],
+            );
+            client_b.new_committer().commit();
+            worker.step();
+            requests_b.extend(drain(worker, &mut request_rx_b));
+        };
+
+        match order {
+            Order::OtherPeerFirst => {
+                other_peer_responds(&mut worker, &mut requests_b);
+                drop(client_a);
+                worker.step();
+            }
+            Order::SenderLeavesFirst => {
+                drop(client_a);
+                worker.step();
+                other_peer_responds(&mut worker, &mut requests_b);
+            }
+        }
+
+        requests_b.extend(drain(&mut worker, &mut request_rx_b));
+
+        // Peer `b` must have requested either the parent node or the block.
+        assert!(
+            requests_b.contains(&parent_request) || requests_b.contains(&block_request),
+            "peer `b` requested neither the parent node nor the block (requests: {requests_b:?})"
+        );
+    }
+}
+
+// Receive all currently pending requests of a client, ignoring `Idle`.
+fn drain(worker: &mut Worker, request_rx: &mut RequestTrackerReceiver) -> Vec<Request> {
+    let mut requests = Vec::new();
+
+    loop {
+        match request_rx.try_recv() {
+            Ok(request) => match request.payload {
+                Request::Idle => (),
+                payload => requests.push(payload),
+            },
+            Err(TryRecvError::InProgress) => worker.step(),
+            Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+        }
+    }
+
+    requests
+}
+
+/// Generate `count + 1` copies of the same snapshot. The first one will have all the blocks present
+/// (the "master copy"). The remaining ones will have some blocks missing but in such a way that
+/// every block is present in at least one of the snapshots.
 fn generate_snapshots_with_missing_blocks(
     mut rng: &mut impl Rng,
     count: usize,
