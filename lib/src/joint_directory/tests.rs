@@ -1125,6 +1125,80 @@ async fn merge_moved_file() {
     assert_eq!(file.read_to_end().await.unwrap(), file_content);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_directory_concurrent_with_tombstone() {
+    let (_base_dir, [branch_l, branch_r]) = setup().await;
+
+    // local: create "dir/a"
+    let mut root_l = branch_l.open_or_create_root().await.unwrap();
+    let mut dir_l = root_l
+        .create_directory("dir".to_owned(), rand::random(), &VersionVector::new())
+        .await
+        .unwrap();
+    drop(create_file(&mut dir_l, "a", b"a").await);
+    drop(dir_l);
+
+    // remote: merge local, then create "dir/b" and an unrelated file "c"
+    merge(&[&branch_r, &branch_l]).await.unwrap();
+    let mut root_r = branch_r.open_or_create_root().await.unwrap();
+    let mut dir_r = root_r
+        .lookup("dir")
+        .unwrap()
+        .directory()
+        .unwrap()
+        .open(DirectoryFallback::Disabled)
+        .await
+        .unwrap();
+    drop(create_file(&mut dir_r, "b", b"b").await);
+    drop(dir_r);
+    root_r.refresh().await.unwrap();
+    drop(create_file(&mut root_r, "c", b"c").await);
+
+    // local: move "dir" to "moved", concurrently with the remote modification. This leaves a
+    // tombstone at "dir" which is concurrent with the remote version of "dir".
+    root_l.refresh().await.unwrap();
+    let src_data = root_l.lookup("dir").unwrap().clone_data();
+    let dst_vv = src_data
+        .version_vector()
+        .clone()
+        .incremented(*branch_l.id());
+    let mut dst_dir = root_l.clone();
+    root_l
+        .move_entry("dir", src_data, &mut dst_dir, "moved", dst_vv)
+        .await
+        .unwrap();
+
+    // The concurrent directory and tombstone are reported as conflict, not as error, and it stays
+    // that way on subsequent merges.
+    for _ in 0..2 {
+        assert_matches!(
+            merge(&[&branch_l, &branch_r]).await,
+            Ok(MergeStatus::Conflict)
+        );
+    }
+
+    root_l.refresh().await.unwrap();
+
+    // The unrelated file is still merged.
+    assert_matches!(root_l.lookup("c"), Ok(EntryRef::File(_)));
+
+    // The moved directory is intact.
+    let moved = root_l
+        .lookup("moved")
+        .unwrap()
+        .directory()
+        .unwrap()
+        .open(DirectoryFallback::Disabled)
+        .await
+        .unwrap();
+    assert_matches!(moved.lookup("a"), Ok(EntryRef::File(_)));
+
+    // The remote directory is preferred over the tombstone.
+    let root_r = branch_r.open_or_create_root().await.unwrap();
+    let joint = JointDirectory::new(Some(branch_l.clone()), [root_l, root_r]);
+    assert_matches!(joint.lookup_unique("dir"), Ok(JointEntryRef::Directory(_)));
+}
+
 // TODO: merge directory with missing blocks
 
 #[tokio::test(flavor = "multi_thread")]

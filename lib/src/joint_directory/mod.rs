@@ -319,6 +319,14 @@ impl JointDirectory {
                                         conflict = true;
                                     }
                                     Ok((MergeStatus::Completed | MergeStatus::Unchanged, _)) => (),
+                                    Err(Error::EntryExists) => {
+                                        // The directory is concurrent with a tombstone in the
+                                        // local branch (e.g., it was modified remotely while being
+                                        // removed or moved locally). Same as with files, treat it
+                                        // as a conflict: proceed with the remaining entries but
+                                        // don't mark this directory as merged.
+                                        conflict = true;
+                                    }
                                     Err(error) => return Err(error),
                                 }
                             }
