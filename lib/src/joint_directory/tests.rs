@@ -1125,6 +1125,45 @@ async fn merge_moved_file() {
     assert_eq!(file.read_to_end().await.unwrap(), file_content);
 }
 
+// Moving an entry created by another writer must not change the version of that writer in the
+// root version vector (a local operation must change only the version of the local writer).
+#[tokio::test(flavor = "multi_thread")]
+async fn move_entry_created_by_other_writer() {
+    let (_base_dir, [branch_a, branch_b]) = setup().await;
+
+    // A creates a file
+    let mut root_a = branch_a.open_or_create_root().await.unwrap();
+    drop(create_file(&mut root_a, "src", b"content").await);
+
+    // B merges it
+    merge(&[&branch_b, &branch_a]).await.unwrap();
+
+    let vv_a = branch_a.version_vector().await.unwrap();
+    let vv_b_before = branch_b.version_vector().await.unwrap();
+    assert_eq!(vv_b_before.get(branch_a.id()), vv_a.get(branch_a.id()));
+
+    // B moves (renames) it
+    let mut root_b = branch_b.open_or_create_root().await.unwrap();
+    let src_data = root_b.lookup("src").unwrap().clone_data();
+    let dst_vv = src_data
+        .version_vector()
+        .clone()
+        .incremented(*branch_b.id());
+    let mut dst_dir = root_b.clone();
+    root_b
+        .move_entry("src", src_data, &mut dst_dir, "dst", dst_vv)
+        .await
+        .unwrap();
+
+    let vv_b_after = branch_b.version_vector().await.unwrap();
+
+    assert_eq!(
+        vv_b_after.get(branch_a.id()),
+        vv_b_before.get(branch_a.id()),
+        "B's version vector before move: {vv_b_before:?}, after: {vv_b_after:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn merge_directory_concurrent_with_tombstone() {
     let (_base_dir, [branch_l, branch_r]) = setup().await;
