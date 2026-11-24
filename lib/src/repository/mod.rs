@@ -24,7 +24,7 @@ use crate::{
     crypto::{PasswordSalt, sign::PublicKey},
     db::{self, DatabaseId},
     debug::DebugPrinter,
-    directory::{Directory, DirectoryFallback, DirectoryLocking, EntryRef, EntryType},
+    directory::{Directory, DirectoryFallback, DirectoryLocking, EntryType},
     error::{Error, Result},
     event::{Event, EventSender},
     file::File,
@@ -695,14 +695,14 @@ impl Repository {
         let src_joint_dir = self.cd(src_dir_path).await?;
 
         // If the src is in a remote branch, need to merge it into the local one first:
-        let (mut src_dir, src_name, src_type) = match src_joint_dir.lookup_unique(src_name)? {
+        let (mut src_dir, src_name) = match src_joint_dir.lookup_unique(src_name)? {
             JointEntryRef::File(entry) => {
                 let src_name = entry.name().to_string();
 
                 let mut file = entry.open().await?;
                 file.fork(local_branch.clone()).await?;
 
-                (file.parent().await?, Cow::Owned(src_name), EntryType::File)
+                (file.parent().await?, Cow::Owned(src_name))
             }
             JointEntryRef::Directory(entry) => {
                 let mut dir_to_move = entry
@@ -717,7 +717,7 @@ impl Repository {
                     .await?
                     .ok_or(Error::OperationNotSupported /* can't move root */)?;
 
-                (src_dir, Cow::Borrowed(src_name), EntryType::Directory)
+                (src_dir, Cow::Borrowed(src_name))
             }
         };
 
@@ -728,41 +728,10 @@ impl Repository {
             .local_version_mut()
             .ok_or(Error::PermissionDenied)?;
 
-        let dst_old_entry = dst_dir.lookup(dst_name);
-
-        // Emulating the behaviour of the libc's `rename` function
-        // (https://www.man7.org/linux/man-pages/man2/rename.2.html)
-        let dst_old_vv = match (src_type, dst_old_entry) {
-            (EntryType::File | EntryType::Directory, Ok(EntryRef::Tombstone(old_entry))) => {
-                old_entry.version_vector().clone()
-            }
-            (EntryType::File | EntryType::Directory, Err(Error::EntryNotFound)) => {
-                VersionVector::new()
-            }
-            (EntryType::File | EntryType::Directory, Err(error)) => return Err(error),
-            (EntryType::File, Ok(EntryRef::File(old_entry))) => old_entry.version_vector().clone(),
-            (EntryType::Directory, Ok(EntryRef::Directory(old_entry))) => {
-                if old_entry
-                    .open(DirectoryFallback::Disabled)
-                    .await?
-                    .entries()
-                    .all(|entry| entry.is_tombstone())
-                {
-                    old_entry.version_vector().clone()
-                } else {
-                    return Err(Error::DirectoryNotEmpty);
-                }
-            }
-            (EntryType::File, Ok(EntryRef::Directory(_))) => return Err(Error::EntryIsDirectory),
-            (EntryType::Directory, Ok(EntryRef::File(_))) => return Err(Error::EntryIsFile),
-        };
-
-        let dst_vv = dst_old_vv
-            .merged(src_entry.version_vector())
-            .incremented(*local_branch.id());
-
+        // Emulates the behaviour of the libc's `rename` function
+        // (https://www.man7.org/linux/man-pages/man2/rename.2.html), see `Directory::move_entry`.
         src_dir
-            .move_entry(&src_name, src_entry, dst_dir, dst_name, dst_vv)
+            .move_entry(&src_name, src_entry, dst_dir, dst_name)
             .await?;
 
         Ok(())

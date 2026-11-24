@@ -330,6 +330,13 @@ impl Directory {
     /// Thus using the "caller provided" version vector, we ensure that we don't accidentally
     /// delete data.
     ///
+    /// If an entry already exists at the destination, it's replaced, following the semantics of
+    /// POSIX `rename`: a file (or a tombstone) can be replaced by a file and an empty directory (or
+    /// a tombstone) can be replaced by a directory. Otherwise an error is returned
+    /// (`EntryIsDirectory`, `EntryIsFile` or `DirectoryNotEmpty`). Note the destination is looked
+    /// up inside the same transaction as the move, so whatever is at the destination at the time
+    /// of the move gets replaced.
+    ///
     /// To move an entry within the same directory, clone `self` and pass it as `dst_dir`.
     ///
     /// # Cancel safety
@@ -343,12 +350,19 @@ impl Directory {
         src_data: EntryData,
         dst_dir: &mut Directory,
         dst_name: &str,
-        dst_vv: VersionVector,
     ) -> Result<()> {
-        let mut dst_data = src_data;
-        let src_vv = mem::replace(dst_data.version_vector_mut(), dst_vv);
-
         let mut tx = self.branch().store().begin_write().await?;
+
+        dst_dir.refresh_in(&mut tx).await?;
+        let dst_old_vv = dst_dir
+            .replaced_version_vector(&mut tx, &src_data, dst_name)
+            .await?;
+
+        let mut dst_data = src_data;
+        let dst_vv = dst_old_vv
+            .merged(dst_data.version_vector())
+            .incremented(*self.branch().id());
+        let src_vv = mem::replace(dst_data.version_vector_mut(), dst_vv);
 
         let mut changeset = Changeset::new();
         let dst_content = dst_dir
@@ -822,6 +836,37 @@ impl Directory {
 
         self.begin_insert_entry(tx, changeset, name.to_owned(), new_data)
             .await
+    }
+
+    /// Checks whether the entry at `name` can be replaced by `new_data` (following the semantics of
+    /// POSIX `rename`) and returns its version vector (or empty version vector if there is no entry
+    /// at `name`).
+    async fn replaced_version_vector(
+        &self,
+        tx: &mut ReadTransaction,
+        new_data: &EntryData,
+        name: &str,
+    ) -> Result<VersionVector> {
+        let old_vv = match (new_data, self.lookup(name)) {
+            (EntryData::Tombstone(_), _) => return Err(Error::EntryNotFound),
+            (_, Ok(EntryRef::Tombstone(old_entry))) => old_entry.version_vector().clone(),
+            (_, Err(Error::EntryNotFound)) => VersionVector::new(),
+            (_, Err(error)) => return Err(error),
+            (EntryData::File(_), Ok(EntryRef::File(old_entry))) => {
+                old_entry.version_vector().clone()
+            }
+            (EntryData::Directory(_), Ok(EntryRef::Directory(old_entry))) => {
+                let old_vv = old_entry.version_vector().clone();
+                self.check_directory_empty(tx, name).await?;
+                old_vv
+            }
+            (EntryData::File(_), Ok(EntryRef::Directory(_))) => {
+                return Err(Error::EntryIsDirectory);
+            }
+            (EntryData::Directory(_), Ok(EntryRef::File(_))) => return Err(Error::EntryIsFile),
+        };
+
+        Ok(old_vv)
     }
 
     async fn check_directory_empty(&self, tx: &mut ReadTransaction, name: &str) -> Result<()> {

@@ -150,13 +150,7 @@ async fn rename_file() {
     let entry_to_move = parent_dir_src.lookup(src_name).unwrap().clone_data();
 
     parent_dir_src
-        .move_entry(
-            src_name,
-            entry_to_move,
-            &mut parent_dir_dst,
-            dst_name,
-            VersionVector::first(*branch.id()),
-        )
+        .move_entry(src_name, entry_to_move, &mut parent_dir_dst, dst_name)
         .await
         .unwrap();
 
@@ -213,13 +207,7 @@ async fn move_file_within_branch() {
     let entry_to_move = root_dir.lookup(file_name).unwrap().clone_data();
 
     root_dir
-        .move_entry(
-            file_name,
-            entry_to_move,
-            &mut aux_dir,
-            file_name,
-            VersionVector::first(*branch.id()),
-        )
+        .move_entry(file_name, entry_to_move, &mut aux_dir, file_name)
         .await
         .unwrap();
 
@@ -253,16 +241,8 @@ async fn move_file_within_branch() {
 
     let entry_to_move = aux_dir.lookup(file_name).unwrap().clone_data();
 
-    let tombstone_vv = root_dir.lookup(file_name).unwrap().version_vector().clone();
-
     aux_dir
-        .move_entry(
-            file_name,
-            entry_to_move,
-            &mut root_dir,
-            file_name,
-            tombstone_vv.incremented(*branch.id()),
-        )
+        .move_entry(file_name, entry_to_move, &mut root_dir, file_name)
         .await
         .unwrap();
 
@@ -317,13 +297,7 @@ async fn move_non_empty_directory() {
     let entry_to_move = root_dir.lookup(dir_name).unwrap().clone_data();
 
     root_dir
-        .move_entry(
-            dir_name,
-            entry_to_move,
-            &mut dst_dir,
-            dir_name,
-            VersionVector::first(*branch.id()),
-        )
+        .move_entry(dir_name, entry_to_move, &mut dst_dir, dir_name)
         .await
         .unwrap();
 

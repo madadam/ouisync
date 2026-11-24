@@ -1084,13 +1084,7 @@ async fn merge_moved_file() {
     // Move the file into the new directory
     let entry_data = remote_root.lookup(file_name).unwrap().clone_data();
     remote_root
-        .move_entry(
-            file_name,
-            entry_data,
-            &mut dir,
-            file_name,
-            VersionVector::first(*branch1.id()),
-        )
+        .move_entry(file_name, entry_data, &mut dir, file_name)
         .await
         .unwrap();
 
@@ -1145,13 +1139,9 @@ async fn move_entry_created_by_other_writer() {
     // B moves (renames) it
     let mut root_b = branch_b.open_or_create_root().await.unwrap();
     let src_data = root_b.lookup("src").unwrap().clone_data();
-    let dst_vv = src_data
-        .version_vector()
-        .clone()
-        .incremented(*branch_b.id());
     let mut dst_dir = root_b.clone();
     root_b
-        .move_entry("src", src_data, &mut dst_dir, "dst", dst_vv)
+        .move_entry("src", src_data, &mut dst_dir, "dst")
         .await
         .unwrap();
 
@@ -1197,13 +1187,9 @@ async fn merge_directory_concurrent_with_tombstone() {
     // tombstone at "dir" which is concurrent with the remote version of "dir".
     root_l.refresh().await.unwrap();
     let src_data = root_l.lookup("dir").unwrap().clone_data();
-    let dst_vv = src_data
-        .version_vector()
-        .clone()
-        .incremented(*branch_l.id());
     let mut dst_dir = root_l.clone();
     root_l
-        .move_entry("dir", src_data, &mut dst_dir, "moved", dst_vv)
+        .move_entry("dir", src_data, &mut dst_dir, "moved")
         .await
         .unwrap();
 
