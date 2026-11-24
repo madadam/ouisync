@@ -321,15 +321,6 @@ impl Directory {
     /// It adds a tombstone to where the entry is being moved from and creates a new entry at the
     /// destination.
     ///
-    /// Note on why we're passing the `src_data` to the function instead of just looking it up
-    /// using `src_name`: it's because the version vector inside of the `src_data` is expected to
-    /// be the one the caller of this function is trying to move. It could, in theory, happen that
-    /// the source entry has been modified between when the caller obtained the entry and when we
-    /// would do the lookup.
-    ///
-    /// Thus using the "caller provided" version vector, we ensure that we don't accidentally
-    /// delete data.
-    ///
     /// If an entry already exists at the destination, it's replaced, following the semantics of
     /// POSIX `rename`: a file (or a tombstone) can be replaced by a file and an empty directory (or
     /// a tombstone) can be replaced by a directory. Otherwise an error is returned
@@ -347,44 +338,50 @@ impl Directory {
     pub(crate) async fn move_entry(
         &mut self,
         src_name: &str,
-        src_data: EntryData,
         dst_dir: &mut Directory,
         dst_name: &str,
     ) -> Result<()> {
         let mut tx = self.branch().store().begin_write().await?;
 
+        let src_dir = self;
+
+        // TODO: Optimize the case where self == dst_dir (rename) - e.g., don't refresh twice,
+        // etc...
+
+        src_dir.refresh_in(&mut tx).await?;
         dst_dir.refresh_in(&mut tx).await?;
+
+        let mut data = src_dir.lookup(src_name)?.clone_data();
+
         let dst_old_vv = dst_dir
-            .replaced_version_vector(&mut tx, &src_data, dst_name)
+            .replaced_version_vector(&mut tx, &data, dst_name)
             .await?;
 
-        let mut dst_data = src_data;
         let dst_vv = dst_old_vv
-            .merged(dst_data.version_vector())
-            .incremented(*self.branch().id());
-        let src_vv = mem::replace(dst_data.version_vector_mut(), dst_vv);
+            .merged(data.version_vector())
+            .incremented(*src_dir.branch().id());
+        let src_vv = mem::replace(data.version_vector_mut(), dst_vv);
 
         let mut changeset = Changeset::new();
         let dst_content = dst_dir
-            .begin_insert_entry(&mut tx, &mut changeset, dst_name.to_owned(), dst_data)
+            .begin_insert_entry(&mut tx, &mut changeset, dst_name.to_owned(), data)
             .await?;
 
-        // TODO: Handle the case when `self` == `dst_dir` separately (call `refresh` and `save`
-        // only once) to avoid having to apply the changeset here.
         changeset
             .apply(
                 &mut tx,
-                self.branch().id(),
-                self.branch()
+                src_dir.branch().id(),
+                src_dir
+                    .branch()
                     .keys()
                     .write()
                     .ok_or(Error::PermissionDenied)?,
             )
             .await?;
 
-        let branch_id = *self.branch().id();
+        let branch_id = *src_dir.branch().id();
         let mut changeset = Changeset::new();
-        let src_content = self
+        let src_content = src_dir
             .begin_remove_entry(
                 &mut tx,
                 &mut changeset,
@@ -395,8 +392,8 @@ impl Directory {
             )
             .await?;
 
-        self.commit(tx, changeset).await?;
-        self.finalize(src_content);
+        src_dir.commit(tx, changeset).await?;
+        src_dir.finalize(src_content);
         dst_dir.finalize(dst_content);
 
         Ok(())
@@ -617,10 +614,10 @@ impl Directory {
             // removed by the garbage collector, but doing it this way improves merge performance:
             //
             // This way, when merging two branches, A and B, where A is happens-after B, both
-            // branches become identical (same vv, same hash) right after the merge. If we
-            // delegated the removal to the gc, they would not be immediatelly identical - because
-            // the orphaned blob would exist in one but not the other - and would only become so
-            // after the gc run. This avoids some unnecessary mesage exchanges during syncing.
+            // branches become identical (same vv, same hash) right after the merge. If we delegated
+            // the removal to the gc, they would not be immediately identical - because the orphaned
+            // blob would exist in one but not the other - and would only become so after the gc
+            // run. This avoids some unnecessary message exchanges during syncing.
             mem::replace(
                 &mut dir.blob,
                 Blob::create(self.branch().clone(), new_blob_id),
@@ -733,8 +730,8 @@ impl Directory {
                     match file {
                         Ok(mut file) => {
                             let mut buf = [0; 32];
-                            let lenght_result = file.read(&mut buf).await;
-                            match lenght_result {
+                            let length_result = file.read(&mut buf).await;
+                            match length_result {
                                 Ok(length) => {
                                     let file_len = file.len();
                                     let ellipsis = if file_len > length as u64 { ".." } else { "" };

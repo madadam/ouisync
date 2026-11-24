@@ -327,7 +327,7 @@ async fn conflict_identical_versions() {
     assert_eq!(file.branch().id(), branch1.id());
     drop(file);
 
-    // The file can also be retreived using `lookup`...
+    // The file can also be retrieved using `lookup`...
     let mut versions = root.lookup("file.txt");
     assert!(versions.next().is_some());
     assert!(versions.next().is_none());
@@ -602,11 +602,11 @@ mod merge_is_commutative {
         .await;
 
         // Run the test on staging branches (cloned from the original branches and wiped out before
-        // each subcase) to prevent the subcases from affecting each other.
+        // each sub-case) to prevent the sub-cases from affecting each other.
         let staging_id_a = PublicKey::random();
         let staging_id_b = PublicKey::random();
 
-        // Subcase 0: merge(a, b)
+        // Sub-case 0: merge(a, b)
         let d0 = async {
             let staging_a = a.clone_into(staging_id_a).await.unwrap();
             let staging_b = b.clone_into(staging_id_b).await.unwrap();
@@ -618,7 +618,7 @@ mod merge_is_commutative {
         .instrument(tracing::info_span!("act: (a, b)"))
         .await;
 
-        // Subcase 1: merge(b, a)
+        // Sub-case 1: merge(b, a)
         let d1 = async {
             remove_branches(a.store(), &[staging_id_a, staging_id_b])
                 .await
@@ -677,16 +677,16 @@ mod merge_is_associative {
             generate(&b, content_b).await.unwrap();
             generate(&c, content_c).await.unwrap();
         }
-        .instrument(tracing::info_span!("arange"))
+        .instrument(tracing::info_span!("arrange"))
         .await;
 
         // Run the test on staging branches (cloned from the original branches and wiped out before
-        // each subcase) to prevent the subcases from affecting each other.
+        // each sub-case) to prevent the sub-cases from affecting each other.
         let staging_id_a = PublicKey::random();
         let staging_id_b = PublicKey::random();
         let staging_id_c = PublicKey::random();
 
-        // Subcase 0: merge(merge(a, b), c)
+        // Sub-case 0: merge(merge(a, b), c)
         let d0 = async {
             let staging_a = a.clone_into(staging_id_a).await.unwrap();
             let staging_b = b.clone_into(staging_id_b).await.unwrap();
@@ -700,7 +700,7 @@ mod merge_is_associative {
         .instrument(tracing::info_span!("act: ((a, b), c)"))
         .await;
 
-        // Subcase 1: merge(a, merge(b, c))
+        // Sub-case 1: merge(a, merge(b, c))
         let d1 = async {
             remove_branches(a.store(), &[staging_id_a, staging_id_b, staging_id_c])
                 .await
@@ -1082,9 +1082,8 @@ async fn merge_moved_file() {
         .unwrap();
 
     // Move the file into the new directory
-    let entry_data = remote_root.lookup(file_name).unwrap().clone_data();
     remote_root
-        .move_entry(file_name, entry_data, &mut dir, file_name)
+        .move_entry(file_name, &mut dir, file_name)
         .await
         .unwrap();
 
@@ -1138,12 +1137,8 @@ async fn move_entry_created_by_other_writer() {
 
     // B moves (renames) it
     let mut root_b = branch_b.open_or_create_root().await.unwrap();
-    let src_data = root_b.lookup("src").unwrap().clone_data();
     let mut dst_dir = root_b.clone();
-    root_b
-        .move_entry("src", src_data, &mut dst_dir, "dst")
-        .await
-        .unwrap();
+    root_b.move_entry("src", &mut dst_dir, "dst").await.unwrap();
 
     let vv_b_after = branch_b.version_vector().await.unwrap();
 
@@ -1186,10 +1181,9 @@ async fn merge_directory_concurrent_with_tombstone() {
     // local: move "dir" to "moved", concurrently with the remote modification. This leaves a
     // tombstone at "dir" which is concurrent with the remote version of "dir".
     root_l.refresh().await.unwrap();
-    let src_data = root_l.lookup("dir").unwrap().clone_data();
     let mut dst_dir = root_l.clone();
     root_l
-        .move_entry("dir", src_data, &mut dst_dir, "moved")
+        .move_entry("dir", &mut dst_dir, "moved")
         .await
         .unwrap();
 

@@ -67,7 +67,7 @@ async fn add_entry_to_existing_directory() {
         .unwrap();
     dir.create_file("two.txt".into()).await.unwrap();
 
-    // Reopen it again and check boths files are still there.
+    // Reopen it again and check both files are still there.
     let dir = branch
         .open_root(DirectoryLocking::Enabled, DirectoryFallback::Disabled)
         .await
@@ -147,10 +147,8 @@ async fn rename_file() {
         .unwrap();
     let mut parent_dir_dst = parent_dir_src.clone();
 
-    let entry_to_move = parent_dir_src.lookup(src_name).unwrap().clone_data();
-
     parent_dir_src
-        .move_entry(src_name, entry_to_move, &mut parent_dir_dst, dst_name)
+        .move_entry(src_name, &mut parent_dir_dst, dst_name)
         .await
         .unwrap();
 
@@ -204,10 +202,8 @@ async fn move_file_within_branch() {
     // Move the file from ./ to ./aux/
     //
 
-    let entry_to_move = root_dir.lookup(file_name).unwrap().clone_data();
-
     root_dir
-        .move_entry(file_name, entry_to_move, &mut aux_dir, file_name)
+        .move_entry(file_name, &mut aux_dir, file_name)
         .await
         .unwrap();
 
@@ -239,10 +235,8 @@ async fn move_file_within_branch() {
     // Now move it back from ./aux/ to ./
     //
 
-    let entry_to_move = aux_dir.lookup(file_name).unwrap().clone_data();
-
     aux_dir
-        .move_entry(file_name, entry_to_move, &mut root_dir, file_name)
+        .move_entry(file_name, &mut root_dir, file_name)
         .await
         .unwrap();
 
@@ -294,10 +288,8 @@ async fn move_non_empty_directory() {
         .await
         .unwrap();
 
-    let entry_to_move = root_dir.lookup(dir_name).unwrap().clone_data();
-
     root_dir
-        .move_entry(dir_name, entry_to_move, &mut dst_dir, dir_name)
+        .move_entry(dir_name, &mut dst_dir, dir_name)
         .await
         .unwrap();
 

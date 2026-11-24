@@ -721,18 +721,12 @@ impl Repository {
             }
         };
 
-        let src_entry = src_dir.lookup(&src_name)?.clone_data();
-
         let mut dst_joint_dir = self.cd(&dst_dir_path).await?;
         let dst_dir = dst_joint_dir
             .local_version_mut()
             .ok_or(Error::PermissionDenied)?;
 
-        // Emulates the behaviour of the libc's `rename` function
-        // (https://www.man7.org/linux/man-pages/man2/rename.2.html), see `Directory::move_entry`.
-        src_dir
-            .move_entry(&src_name, src_entry, dst_dir, dst_name)
-            .await?;
+        src_dir.move_entry(&src_name, dst_dir, dst_name).await?;
 
         Ok(())
     }
