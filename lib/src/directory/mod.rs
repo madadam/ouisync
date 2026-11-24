@@ -289,6 +289,8 @@ impl Directory {
         let mut tx = self.branch().store().begin_write().await?;
         let mut changeset = Changeset::new();
 
+        self.refresh_in(&mut tx).await?;
+
         match self.lookup(name) {
             Ok(EntryRef::File(_) | EntryRef::Directory(_)) | Err(Error::EntryNotFound) => (),
             Ok(EntryRef::Tombstone(old_entry)) => {
@@ -345,9 +347,6 @@ impl Directory {
 
         let src_dir = self;
 
-        // TODO: Optimize the case where self == dst_dir (rename) - e.g., don't refresh twice,
-        // etc...
-
         src_dir.refresh_in(&mut tx).await?;
         dst_dir.refresh_in(&mut tx).await?;
 
@@ -379,8 +378,10 @@ impl Directory {
             )
             .await?;
 
-        let branch_id = *src_dir.branch().id();
+        src_dir.refresh_in(&mut tx).await?;
+
         let mut changeset = Changeset::new();
+        let branch_id = *src_dir.branch().id();
         let src_content = src_dir
             .begin_remove_entry(
                 &mut tx,
@@ -892,8 +893,6 @@ impl Directory {
         name: String,
         data: EntryData,
     ) -> Result<Content> {
-        self.refresh_in(tx).await?;
-
         let mut content = self.content.clone();
         let diff = content.insert(name, data)?;
         self.save(tx, changeset, &content).await?;
