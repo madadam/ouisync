@@ -5,7 +5,7 @@ use crate::{
     db,
     event::EventSender,
     store::Store,
-    test_utils,
+    test_utils::{self, init_log},
 };
 use assert_matches::assert_matches;
 use std::collections::BTreeSet;
@@ -96,7 +96,7 @@ async fn remove_file() {
         .await
         .unwrap();
     parent_dir
-        .remove_entry(name, branch.id(), file_vv)
+        .remove_entry(name, branch.id(), &file_vv)
         .await
         .unwrap();
 
@@ -185,7 +185,7 @@ async fn move_file_within_branch() {
     // Create a directory with a single file.
     let mut root_dir = branch.open_or_create_root().await.unwrap();
     let mut aux_dir = root_dir
-        .create_directory("aux".into(), rand::random(), &VersionVector::new())
+        .create_directory("aux".into(), rand::random())
         .await
         .unwrap();
 
@@ -271,7 +271,7 @@ async fn move_non_empty_directory() {
     // Create a directory with a single file.
     let mut root_dir = branch.open_or_create_root().await.unwrap();
     let mut dir = root_dir
-        .create_directory(dir_name.into(), rand::random(), &VersionVector::new())
+        .create_directory(dir_name.into(), rand::random())
         .await
         .unwrap();
 
@@ -284,7 +284,7 @@ async fn move_non_empty_directory() {
     drop(dir);
 
     let mut dst_dir = root_dir
-        .create_directory(dst_dir_name.into(), rand::random(), &VersionVector::new())
+        .create_directory(dst_dir_name.into(), rand::random())
         .await
         .unwrap();
 
@@ -331,7 +331,7 @@ async fn remove_subdirectory() {
     // Create a directory with a single subdirectory.
     let mut parent_dir = branch.open_or_create_root().await.unwrap();
     let dir = parent_dir
-        .create_directory(name.into(), rand::random(), &VersionVector::new())
+        .create_directory(name.into(), rand::random())
         .await
         .unwrap();
     let dir_vv = dir.version_vector().await.unwrap();
@@ -343,7 +343,7 @@ async fn remove_subdirectory() {
         .await
         .unwrap();
     parent_dir
-        .remove_entry(name, branch.id(), dir_vv)
+        .remove_entry(name, branch.id(), &dir_vv)
         .await
         .unwrap();
 
@@ -366,7 +366,7 @@ async fn fork_sanity_check() {
     // Create a nested directory by branch 0
     let mut root0 = branch0.open_or_create_root().await.unwrap();
     let dir0 = root0
-        .create_directory("dir".into(), rand::random(), &VersionVector::new())
+        .create_directory("dir".into(), rand::random())
         .await
         .unwrap();
 
@@ -425,22 +425,24 @@ async fn fork_sanity_check() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn fork_over_tombstone() {
+    init_log();
+
     let (_base_dir, [branch0, branch1]) = setup_multiple().await;
 
     // Create a directory in branch 0 and delete it.
     let mut root0 = branch0.open_or_create_root().await.unwrap();
     root0
-        .create_directory("dir".into(), rand::random(), &VersionVector::new())
+        .create_directory("dir".into(), rand::random())
         .await
         .unwrap();
 
     let vv = root0.lookup("dir").unwrap().version_vector().clone();
-    root0.remove_entry("dir", branch0.id(), vv).await.unwrap();
+    root0.remove_entry("dir", branch0.id(), &vv).await.unwrap();
 
     // Create a directory with the same name in branch 1.
     let mut root1 = branch1.open_or_create_root().await.unwrap();
     root1
-        .create_directory("dir".into(), rand::random(), &VersionVector::new())
+        .create_directory("dir".into(), rand::random())
         .await
         .unwrap();
 
@@ -474,25 +476,21 @@ async fn fork_over_existing_directory() {
     // Create the directories with the same name but different blob id in each branch.
     let mut root0 = branch0.open_or_create_root().await.unwrap();
     let dir0 = root0
-        .create_directory(name.into(), rand::random(), &VersionVector::new())
+        .create_directory(name.into(), rand::random())
         .await
         .unwrap();
 
     let mut root1 = branch1.open_or_create_root().await.unwrap();
     let _dir1 = root1
-        .create_directory(name.into(), rand::random(), &VersionVector::new())
+        .create_directory(name.into(), rand::random())
         .await
         .unwrap();
 
-    // Fork back and forth. Afterwards both dirs should have the same blob id and vv.
+    // Fork back and forth. Afterwards both dirs should have the same blob id.
     let dir1 = dir0.fork(&branch1).await.unwrap();
     let dir0 = dir1.fork(&branch0).await.unwrap();
 
     assert_eq!(dir0.blob_id(), dir1.blob_id());
-    assert_eq!(
-        dir0.version_vector().await.unwrap(),
-        dir1.version_vector().await.unwrap()
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -504,7 +502,7 @@ async fn modify_directory_concurrently() {
     // the file also exists in the other after refresh.
 
     let mut dir0 = root
-        .create_directory("dir".to_owned(), rand::random(), &VersionVector::new())
+        .create_directory("dir".to_owned(), rand::random())
         .await
         .unwrap();
     let mut dir1 = root
@@ -543,7 +541,7 @@ async fn remove_remote_only_entry() {
     let remote_id = PublicKey::random();
     let remote_vv = vv![remote_id => 1]; // pretend there is a remote file with this vv
 
-    root.remove_entry(name, &remote_id, remote_vv.clone())
+    root.remove_entry(name, &remote_id, &remote_vv)
         .await
         .unwrap();
 
@@ -557,6 +555,8 @@ async fn remove_remote_only_entry() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn remove_concurrent_entry() {
+    init_log();
+
     let (_base_dir, local_branch) = setup().await;
     let mut root = local_branch.open_or_create_root().await.unwrap();
 
@@ -566,7 +566,7 @@ async fn remove_concurrent_entry() {
     let remote_id = PublicKey::random();
     let remote_vv = vv![remote_id => 1]; // pretend there is a remote file with this vv
 
-    root.remove_entry(name, &remote_id, remote_vv.clone())
+    root.remove_entry(name, &remote_id, &remote_vv)
         .await
         .unwrap();
 
@@ -586,7 +586,7 @@ async fn remove_non_existing_local_entry() {
 
     let vv0 = local_branch.version_vector().await.unwrap();
 
-    root.remove_entry(name, local_branch.id(), VersionVector::new())
+    root.remove_entry(name, local_branch.id(), &VersionVector::new())
         .await
         .unwrap();
 
@@ -611,7 +611,7 @@ async fn create_tombstone_over_non_existing_entry() {
     .unwrap();
 
     let vv1 = local_branch.version_vector().await.unwrap();
-    assert!(vv1 > vv0);
+    assert_eq!(vv1, vv0);
     assert_matches!(root.lookup(name), Ok(EntryRef::Tombstone(_)));
 }
 
@@ -630,13 +630,16 @@ async fn create_tombstone_over_existing_entry() {
 
     root.create_tombstone(
         name,
-        EntryTombstoneData::new(TombstoneCause::Removed, file_vv.incremented(remote_id)),
+        EntryTombstoneData::new(
+            TombstoneCause::Removed,
+            file_vv.merged(&VersionVector::single(remote_id, 1)),
+        ),
     )
     .await
     .unwrap();
 
     let vv1 = local_branch.version_vector().await.unwrap();
-    assert!(vv1 > vv0);
+    assert_eq!(vv1, vv0);
     assert_matches!(root.lookup(name), Ok(EntryRef::Tombstone(_)));
 }
 
@@ -656,7 +659,7 @@ async fn create_tombstone_is_idempotent() {
         .unwrap()
         .version_vector()
         .clone()
-        .incremented(remote_id);
+        .merged(&VersionVector::single(remote_id, 1));
 
     root.create_tombstone(
         name,
@@ -666,7 +669,7 @@ async fn create_tombstone_is_idempotent() {
     .unwrap();
 
     let proof1 = local_branch.proof().await.unwrap();
-    assert!(proof1.version_vector > proof0.version_vector);
+    assert_eq!(proof1.version_vector, proof0.version_vector);
 
     root.create_tombstone(
         name,

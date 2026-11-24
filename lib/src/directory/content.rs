@@ -4,7 +4,6 @@ use super::entry_data::EntryData;
 use crate::{
     blob::BlobId,
     error::{Error, Result},
-    protocol::Bump,
     version_vector::VersionVector,
 };
 use serde::Deserialize;
@@ -63,28 +62,19 @@ impl Content {
         self.entries.get_mut(name)
     }
 
-    /// Inserts an entry into this directory. Returns the difference between the new and the old
-    /// version vectors.
-    pub fn insert(
-        &mut self,
-        name: String,
-        new_data: EntryData,
-    ) -> Result<VersionVector, EntryExists> {
+    /// Inserts an entry into this directory.
+    pub fn insert(&mut self, name: String, new_data: EntryData) -> Result<(), EntryExists> {
         match self.entries.entry(name) {
             Entry::Vacant(entry) => {
-                let diff = new_data.version_vector().clone();
                 entry.insert(new_data);
-                Ok(diff)
             }
             Entry::Occupied(mut entry) => {
                 check_replace(entry.get(), &new_data)?;
-                let diff = new_data
-                    .version_vector()
-                    .saturating_sub(entry.get().version_vector());
                 entry.insert(new_data);
-                Ok(diff)
             }
         }
+
+        Ok(())
     }
 
     /// Checks whether an entry can be inserted into this directory without actually inserting it.
@@ -101,15 +91,14 @@ impl Content {
         }
     }
 
-    /// Updates the version vector of entry at `name`. Returns the difference between the old and
-    /// the new version vectors.
-    pub fn bump(&mut self, name: &str, bump: Bump) -> Result<VersionVector> {
-        Ok(bump.apply(
-            self.entries
-                .get_mut(name)
-                .ok_or(Error::EntryNotFound)?
-                .version_vector_mut(),
-        ))
+    /// Updates the version vector of entry at `name`.
+    pub fn bump(&mut self, name: &str, bump: &VersionVector) -> Result<()> {
+        self.entries
+            .get_mut(name)
+            .ok_or(Error::EntryNotFound)?
+            .version_vector_mut()
+            .merge(bump);
+        Ok(())
     }
 
     /// Initial version vector for a new entry to be inserted.
@@ -159,6 +148,12 @@ fn check_replace(old: &EntryData, new: &EntryData) -> Result<Option<BlobId>, Ent
         old,
     ) {
         (Some(Ordering::Greater), _, _) => Ok(old.blob_id().copied()),
+        // Replacing tombstone with a directory with the same version vector is a special case
+        // that's allowed only to support merging: forked directory is created with the same version
+        // vector as the existing tombstone, or empty version vector if no such tombstone exists.
+        (Some(Ordering::Equal), EntryData::Directory(_), EntryData::Tombstone(_)) => {
+            Ok(new.blob_id().copied())
+        }
         (Some(Ordering::Equal | Ordering::Less), EntryData::File(new), EntryData::File(old))
             if new.blob_id == old.blob_id =>
         {

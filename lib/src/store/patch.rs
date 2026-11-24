@@ -8,7 +8,7 @@ use crate::{
     },
     future::TryStreamExt,
     protocol::{
-        BlockId, Bump, EMPTY_INNER_HASH, EMPTY_LEAF_HASH, INNER_LAYER_COUNT, InnerNode, InnerNodes,
+        BlockId, EMPTY_INNER_HASH, EMPTY_LEAF_HASH, INNER_LAYER_COUNT, InnerNode, InnerNodes,
         LeafNodes, NodeState, Proof, RootNodeFilter, RootNodeKind, SingleBlockPresence, Summary,
         get_bucket,
     },
@@ -99,7 +99,7 @@ impl Patch {
     pub async fn save(
         mut self,
         tx: &mut WriteTransaction,
-        bump: Bump,
+        bump: VersionVector,
         write_keys: &Keypair,
     ) -> Result<(), Error> {
         self.recalculate();
@@ -256,12 +256,12 @@ impl Patch {
     async fn save_root(
         mut self,
         tx: &mut WriteTransaction,
-        bump: Bump,
+        bump: VersionVector,
         write_keys: &Keypair,
     ) -> Result<(), Error> {
         let db = tx.db();
 
-        bump.apply(&mut self.vv);
+        self.vv.merge(&bump);
 
         let new_proof = Proof::new(self.branch_id, self.vv, self.root_hash, write_keys);
 

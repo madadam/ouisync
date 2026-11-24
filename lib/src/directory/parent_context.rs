@@ -1,14 +1,12 @@
 use super::{DirectoryFallback, Error};
 use crate::{
-    blob::BlobId,
     blob::{
-        self,
+        self, BlobId,
         lock::{LockKind, ReadLock},
     },
     branch::Branch,
     directory::{Directory, content::EntryExists},
     error::Result,
-    protocol::Bump,
     store::{Changeset, ReadTransaction},
     version_vector::VersionVector,
 };
@@ -41,25 +39,6 @@ impl ParentContext {
             entry_name,
             parent: parent.map(Box::new),
         }
-    }
-
-    /// Updates the version vector of this entry and all its ancestors.
-    ///
-    /// Note: If `bump` is empty, it increments the version corresponding to `branch`.
-    pub async fn bump(
-        &self,
-        tx: &mut ReadTransaction,
-        changeset: &mut Changeset,
-        branch: Branch,
-        bump: Bump,
-    ) -> Result<()> {
-        let mut directory = self.open_in(tx, branch).await?;
-        let mut content = directory.content.clone();
-        let diff = content.bump(&self.entry_name, bump)?;
-        directory.save(tx, changeset, &content).await?;
-        directory.bump(tx, changeset, Bump::Add(diff)).await?;
-
-        Ok(())
     }
 
     /// Atomically forks the blob of this entry into the local branch and returns the updated
@@ -159,11 +138,8 @@ impl ParentContext {
         let mut content = directory.content.clone();
 
         match content.insert(self.entry_name.clone(), src_entry_data) {
-            Ok(diff) => {
+            Ok(()) => {
                 directory.save(&mut tx, &mut changeset, &content).await?;
-                directory
-                    .bump(&mut tx, &mut changeset, Bump::Add(diff))
-                    .await?;
                 directory.commit(tx, changeset).await?;
                 directory.finalize(content);
                 tracing::trace!("fork complete");
@@ -175,6 +151,26 @@ impl ParentContext {
             }
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Bump the version vector of this entry and all its ancestor directories.
+    pub async fn bump(
+        &self,
+        tx: &mut ReadTransaction,
+        changeset: &mut Changeset,
+        branch: Branch,
+    ) -> Result<()> {
+        let bump = tx.version_vector_bump(branch.id()).await?;
+
+        let mut parent_dir = self.open_in(tx, branch).await?;
+
+        let mut content = parent_dir.content.clone();
+        content.bump(self.entry_name(), &bump)?;
+
+        parent_dir.save(tx, changeset, &content).await?;
+        parent_dir.bump_all(tx, changeset, &bump).await?;
+
+        Ok(())
     }
 
     pub(super) fn entry_name(&self) -> &str {

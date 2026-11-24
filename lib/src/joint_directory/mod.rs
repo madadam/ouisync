@@ -6,7 +6,7 @@ use crate::{
     conflict,
     crypto::sign::PublicKey,
     directory::{
-        self, Directory, DirectoryFallback, DirectoryRef, EntryRef, EntryTombstoneData, EntryType,
+        Directory, DirectoryFallback, DirectoryRef, EntryRef, EntryTombstoneData, EntryType,
         FileRef,
     },
     error::{Error, Result},
@@ -105,7 +105,7 @@ impl JointDirectory {
     /// - If there is only one version of a entry with the specified name, it is returned.
     /// - If there are multiple versions and all of them are files, an `AmbiguousEntry` error is
     ///   returned. To lookup a single version, include a disambiguator in the `name`.
-    /// - If there are multiple versiond and all of them are directories, they are merged into a
+    /// - If there are multiple versions and all of them are directories, they are merged into a
     ///   single `JointEntryRef::Directory` and returned.
     /// - Finally, if there are both files and directories, only the directories are retured (merged
     ///   into a `JointEntryRef::Directory`) and the files are discarded. This is so it's possible
@@ -227,7 +227,7 @@ impl JointDirectory {
         let local_version = self.fork().await?;
 
         for (name, branch_id, vv) in entries {
-            local_version.remove_entry(&name, &branch_id, vv).await?;
+            local_version.remove_entry(&name, &branch_id, &vv).await?;
         }
 
         Ok(())
@@ -348,10 +348,8 @@ impl JointDirectory {
             local_version.create_tombstone(&name, tombstone).await?;
         }
 
-        // Need to bump the root version vector to reflect any non-filesystem changes (e.g.,
-        // removal of nodes during garbage collection).
-        if !conflict && local_version.is_root() {
-            directory::bump_root(&local_branch, new_version_vector).await?;
+        if !conflict {
+            local_version.finalize_merge(&new_version_vector).await?;
         }
 
         if tracing::enabled!(tracing::Level::TRACE) {

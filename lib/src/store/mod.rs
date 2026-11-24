@@ -49,6 +49,7 @@ use crate::{
         SingleBlockPresence,
     },
     sync::broadcast_hash_set,
+    version_vector::VersionVector,
 };
 use futures_util::{Stream, TryStreamExt};
 use std::{
@@ -480,6 +481,24 @@ impl Reader {
     ) -> impl Stream<Item = Result<Hash, Error>> + 'a {
         leaf_node::load_locators(self.db(), block_id)
     }
+
+    /// Get version vector bump from the latest approved root node in the given branch.
+    ///
+    /// See also [`RootNode::version_vector_bump()`].
+    pub(crate) async fn version_vector_bump(
+        &mut self,
+        writer_id: &PublicKey,
+    ) -> Result<VersionVector, Error> {
+        match self
+            .load_latest_approved_root_node(writer_id, RootNodeFilter::Any)
+            .await
+        {
+            Ok(node) => Ok(node.version_vector_bump()),
+            Err(Error::BranchNotFound) => Ok(VersionVector::single(*writer_id, 1)),
+            Err(error) => Err(error),
+        }
+    }
+
     // Access the underlying database connection.
     // TODO: Make this private, but first we need to move the `metadata` module to `store`.
     pub(crate) fn db(&mut self) -> &mut db::Connection {

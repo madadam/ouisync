@@ -14,7 +14,7 @@ use crate::{
     db,
     event::{Event, EventSender, Payload},
     protocol::{
-        Block, BlockId, Bump, RepositoryId, RootNode, SingleBlockPresence, get_bucket,
+        Block, BlockId, RepositoryId, RootNode, SingleBlockPresence, get_bucket,
         test_utils::Snapshot,
     },
     repository::{Vault, monitor::RepositoryMonitor},
@@ -573,8 +573,8 @@ async fn save_snapshot(
         return;
     }
 
-    let mut version_vector = VersionVector::new();
-    version_vector.insert(writer_id, 2); // to force overwrite the initial root node
+    // version 2 is to force overwrite the initial root node
+    let version_vector = VersionVector::single(writer_id, 2);
 
     let status = SnapshotWriter::begin(vault.store(), snapshot)
         .await
@@ -680,12 +680,11 @@ async fn create_changeset(
         changeset.write_block(block);
     }
 
-    changeset.bump(Bump::increment(*writer_id));
+    changeset.bump(tx.version_vector_bump(writer_id).await.unwrap());
     changeset
         .apply(&mut tx, writer_id, write_keys)
         .await
         .unwrap();
-
     tx.commit().await.unwrap();
 
     vault.event_tx.send(Payload::SnapshotApproved(*writer_id));
@@ -711,7 +710,7 @@ async fn update_snapshot(
         changeset.unlink_block(encoded_locator, None);
     }
 
-    changeset.bump(Bump::increment(*writer_id));
+    changeset.bump(tx.version_vector_bump(writer_id).await.unwrap());
     changeset
         .apply(&mut tx, writer_id, write_keys)
         .await

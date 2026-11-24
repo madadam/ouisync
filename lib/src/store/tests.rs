@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     crypto::{cipher::SecretKey, sign::Keypair},
-    protocol::{Block, Bump, EMPTY_INNER_HASH, INNER_LAYER_COUNT, Locator, SingleBlockPresence},
+    protocol::{Block, EMPTY_INNER_HASH, INNER_LAYER_COUNT, Locator, SingleBlockPresence},
     test_utils,
 };
 use proptest::{arbitrary::any, collection::vec};
@@ -108,7 +108,7 @@ async fn remove_locator() {
     changeset.unlink_block(encoded_locator, None);
     // Need to bump otherwise a draft snapshot would be created and the previous snapshot would not
     // be removed.
-    changeset.bump(Bump::increment(branch_id));
+    changeset.bump(tx.version_vector_bump(&branch_id).await.unwrap());
     changeset
         .apply(&mut tx, &branch_id, &write_keys)
         .await
@@ -162,7 +162,7 @@ async fn remove_block() {
 
     let mut changeset = Changeset::new();
     changeset.unlink_block(locator0, None);
-    changeset.bump(Bump::increment(branch_id_0));
+    changeset.bump(tx.version_vector_bump(&branch_id_0).await.unwrap());
     changeset
         .apply(&mut tx, &branch_id_0, &write_keys)
         .await
@@ -172,7 +172,7 @@ async fn remove_block() {
 
     let mut changeset = Changeset::new();
     changeset.unlink_block(locator1, None);
-    changeset.bump(Bump::increment(branch_id_0));
+    changeset.bump(tx.version_vector_bump(&branch_id_0).await.unwrap());
     changeset
         .apply(&mut tx, &branch_id_1, &write_keys)
         .await
@@ -218,7 +218,7 @@ async fn overwrite_block() {
     changeset.link_block(locator, block1_id, SingleBlockPresence::Present);
     // Need to bump otherwise a draft snapshot would be created and the previous snapshot would not
     // be removed.
-    changeset.bump(Bump::increment(branch_id));
+    changeset.bump(tx.version_vector_bump(&branch_id).await.unwrap());
     changeset
         .apply(&mut tx, &branch_id, &write_keys)
         .await
@@ -419,12 +419,13 @@ async fn prune_case(ops: Vec<PruneTestOp>, rng_seed: u64) {
             PruneTestOp::Bump => {
                 let mut tx = store.begin_write().await.unwrap();
                 let mut changeset = Changeset::new();
-                changeset.force_bump(true);
-                changeset.bump(Bump::increment(branch_id));
+
+                changeset.bump(tx.version_vector_bump(&branch_id).await.unwrap());
                 changeset
                     .apply(&mut tx, &branch_id, &write_keys)
                     .await
                     .unwrap();
+
                 tx.commit().await.unwrap();
             }
             PruneTestOp::Prune => {

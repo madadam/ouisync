@@ -559,7 +559,7 @@ mod tests {
     use crate::{
         access_control::WriteSecrets,
         protocol::{
-            BlockContent, Bump, EMPTY_INNER_HASH, MultiBlockPresence, SingleBlockPresence,
+            BlockContent, EMPTY_INNER_HASH, MultiBlockPresence, SingleBlockPresence,
             test_utils::Snapshot,
         },
         store::{SnapshotWriter, Store},
@@ -865,7 +865,6 @@ mod tests {
 
     mod receive_and_create_root_node {
         use super::*;
-        use crate::protocol::Bump;
         use rand::RngExt;
         use tokio::task;
 
@@ -970,7 +969,7 @@ mod tests {
 
                 let mut changeset = Changeset::new();
                 changeset.link_block(locator_0, block_id_0_1, SingleBlockPresence::Present);
-                changeset.bump(Bump::increment(local_id));
+                changeset.bump(tx.version_vector_bump(&local_id).await.unwrap());
                 changeset
                     .apply(&mut tx, &local_id, &secrets.write_keys)
                     .await
@@ -1326,7 +1325,7 @@ mod tests {
         for node in snapshot.leaf_nodes() {
             changeset.link_block(node.locator, node.block_id, SingleBlockPresence::Present);
         }
-        changeset.bump(Bump::increment(local_id));
+        changeset.bump(tx.version_vector_bump(&local_id).await.unwrap());
         changeset
             .apply(&mut tx, &local_id, &secrets.write_keys)
             .await
@@ -1418,7 +1417,7 @@ mod tests {
         for node in local_snapshot.leaf_nodes() {
             changeset.link_block(node.locator, node.block_id, SingleBlockPresence::Present);
         }
-        changeset.bump(Bump::increment(local_id));
+        changeset.bump(tx.version_vector_bump(&local_id).await.unwrap());
         changeset
             .apply(&mut tx, &local_id, &secrets.write_keys)
             .await
@@ -1526,7 +1525,7 @@ mod tests {
         for node in local_snapshot.leaf_nodes() {
             changeset.link_block(node.locator, node.block_id, SingleBlockPresence::Present);
         }
-        changeset.bump(Bump::increment(local_id));
+        changeset.bump(tx.version_vector_bump(&local_id).await.unwrap());
         changeset
             .apply(&mut tx, &local_id, &secrets.write_keys)
             .await

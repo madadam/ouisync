@@ -164,13 +164,13 @@ async fn conflict_directories() {
 
     let mut root0 = branch0.open_or_create_root().await.unwrap();
     root0
-        .create_directory("dir".to_owned(), rand::random(), &VersionVector::new())
+        .create_directory("dir".to_owned(), rand::random())
         .await
         .unwrap();
 
     let mut root1 = branch1.open_or_create_root().await.unwrap();
     root1
-        .create_directory("dir".to_owned(), rand::random(), &VersionVector::new())
+        .create_directory("dir".to_owned(), rand::random())
         .await
         .unwrap();
 
@@ -195,7 +195,7 @@ async fn conflict_file_and_single_version_directory() {
 
     let mut root1 = branch1.open_or_create_root().await.unwrap();
     root1
-        .create_directory("config".to_owned(), rand::random(), &VersionVector::new())
+        .create_directory("config".to_owned(), rand::random())
         .await
         .unwrap();
 
@@ -255,13 +255,13 @@ async fn conflict_file_and_multi_version_directory() {
 
     let mut root1 = branch1.open_or_create_root().await.unwrap();
     root1
-        .create_directory("config".to_owned(), rand::random(), &VersionVector::new())
+        .create_directory("config".to_owned(), rand::random())
         .await
         .unwrap();
 
     let mut root2 = branch2.open_or_create_root().await.unwrap();
     root2
-        .create_directory("config".to_owned(), rand::random(), &VersionVector::new())
+        .create_directory("config".to_owned(), rand::random())
         .await
         .unwrap();
 
@@ -347,14 +347,14 @@ async fn cd_into_concurrent_directory() {
     let mut root0 = branch0.open_or_create_root().await.unwrap();
 
     let mut dir0 = root0
-        .create_directory("pics".to_owned(), rand::random(), &VersionVector::new())
+        .create_directory("pics".to_owned(), rand::random())
         .await
         .unwrap();
     create_file(&mut dir0, "dog.jpg", &[]).await;
 
     let mut root1 = branch1.open_or_create_root().await.unwrap();
     let mut dir1 = root1
-        .create_directory("pics".to_owned(), rand::random(), &VersionVector::new())
+        .create_directory("pics".to_owned(), rand::random())
         .await
         .unwrap();
     create_file(&mut dir1, "cat.jpg", &[]).await;
@@ -531,10 +531,9 @@ mod attempt_to_merge_concurrent_file {
             .await
             .unwrap();
         create_file(&mut remote_dir, "cat.jpg", b"v0").await;
-        remote_dir.refresh().await.unwrap();
 
         merge(&[&local_branch, &remote_branch])
-            .instrument(tracing::info_span!("merge"))
+            .instrument(tracing::info_span!("merge 1"))
             .await
             .unwrap();
 
@@ -553,7 +552,9 @@ mod attempt_to_merge_concurrent_file {
         remote_dir.refresh().await.unwrap();
 
         assert_matches!(
-            merge(&[&local_branch, &remote_branch]).await,
+            merge(&[&local_branch, &remote_branch])
+                .instrument(tracing::info_span!("merge 2"))
+                .await,
             Ok(MergeStatus::Conflict)
         );
 
@@ -878,7 +879,7 @@ async fn merge_create_and_remove_file() {
         .version_vector()
         .clone();
     root_r
-        .remove_entry("monkey.jpg", branch_r.id(), file_vv)
+        .remove_entry("monkey.jpg", branch_r.id(), &file_vv)
         .instrument(tracing::info_span!("remove"))
         .await
         .unwrap();
@@ -970,7 +971,7 @@ async fn merge_concurrent_directories() {
 
     let mut local_root = branch0.open_or_create_root().await.unwrap();
     let mut local_dir = local_root
-        .create_directory("dir".into(), rand::random(), &VersionVector::new())
+        .create_directory("dir".into(), rand::random())
         .await
         .unwrap();
     create_file(&mut local_dir, "dog.jpg", &[]).await;
@@ -980,7 +981,7 @@ async fn merge_concurrent_directories() {
 
     let mut remote_root = branch1.open_or_create_root().await.unwrap();
     let mut remote_dir = remote_root
-        .create_directory("dir".into(), rand::random(), &VersionVector::new())
+        .create_directory("dir".into(), rand::random())
         .await
         .unwrap();
     create_file(&mut remote_dir, "cat.jpg", &[]).await;
@@ -1033,7 +1034,7 @@ async fn merge_file_and_tombstone() {
 
     // Remove the file in the remote branch.
     root_r
-        .remove_entry("dog.jpg", branch_r.id(), file_vv)
+        .remove_entry("dog.jpg", branch_r.id(), &file_vv)
         .await
         .unwrap();
 
@@ -1077,7 +1078,7 @@ async fn merge_moved_file() {
 
     // Create a new directory in the remote branch
     let mut dir = remote_root
-        .create_directory(dir_name.to_owned(), rand::random(), &VersionVector::new())
+        .create_directory(dir_name.to_owned(), rand::random())
         .await
         .unwrap();
 
@@ -1151,20 +1152,26 @@ async fn move_entry_created_by_other_writer() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn merge_directory_concurrent_with_tombstone() {
+    test_utils::init_log();
+
     let (_base_dir, [branch_l, branch_r]) = setup().await;
 
     // local: create "dir/a"
     let mut root_l = branch_l.open_or_create_root().await.unwrap();
     let mut dir_l = root_l
-        .create_directory("dir".to_owned(), rand::random(), &VersionVector::new())
+        .create_directory("dir".to_owned(), rand::random())
         .await
         .unwrap();
     drop(create_file(&mut dir_l, "a", b"a").await);
     drop(dir_l);
 
     // remote: merge local, then create "dir/b" and an unrelated file "c"
-    merge(&[&branch_r, &branch_l]).await.unwrap();
+    merge(&[&branch_r, &branch_l])
+        .instrument(tracing::info_span!("merge local -> remote"))
+        .await
+        .unwrap();
     let mut root_r = branch_r.open_or_create_root().await.unwrap();
+
     let mut dir_r = root_r
         .lookup("dir")
         .unwrap()
@@ -1184,14 +1191,17 @@ async fn merge_directory_concurrent_with_tombstone() {
     let mut dst_dir = root_l.clone();
     root_l
         .move_entry("dir", &mut dst_dir, "moved")
+        .instrument(tracing::info_span!("move dir -> moved"))
         .await
         .unwrap();
 
     // The concurrent directory and tombstone are reported as conflict, not as error, and it stays
     // that way on subsequent merges.
-    for _ in 0..2 {
+    for i in 0..2 {
         assert_matches!(
-            merge(&[&branch_l, &branch_r]).await,
+            merge(&[&branch_l, &branch_r])
+                .instrument(tracing::info_span!("merge remote -> local", i))
+                .await,
             Ok(MergeStatus::Conflict)
         );
     }
@@ -1226,27 +1236,27 @@ async fn remove_non_empty_subdirectory() {
 
     let mut local_root = branch0.open_or_create_root().await.unwrap();
     let mut local_dir = local_root
-        .create_directory("dir0".into(), rand::random(), &VersionVector::new())
+        .create_directory("dir0".into(), rand::random())
         .await
         .unwrap();
     create_file(&mut local_dir, "foo.txt", &[]).await;
     drop(local_dir);
 
     local_root
-        .create_directory("dir1".into(), rand::random(), &VersionVector::new())
+        .create_directory("dir1".into(), rand::random())
         .await
         .unwrap();
 
     let mut remote_root = branch1.open_or_create_root().await.unwrap();
     let mut remote_dir = remote_root
-        .create_directory("dir0".into(), rand::random(), &VersionVector::new())
+        .create_directory("dir0".into(), rand::random())
         .await
         .unwrap();
     create_file(&mut remote_dir, "bar.txt", &[]).await;
     drop(remote_dir);
 
     remote_root
-        .create_directory("dir2".into(), rand::random(), &VersionVector::new())
+        .create_directory("dir2".into(), rand::random())
         .await
         .unwrap();
 
@@ -1312,6 +1322,7 @@ where
     assert_eq!(prev_i, count);
 }
 
+#[instrument(skip_all, fields(name = name, content.len = content.len()))]
 async fn create_file(parent: &mut Directory, name: &str, content: &[u8]) -> File {
     let mut file = parent.create_file(name.to_owned()).await.unwrap();
 
@@ -1323,6 +1334,10 @@ async fn create_file(parent: &mut Directory, name: &str, content: &[u8]) -> File
     file
 }
 
+#[instrument(
+    skip_all,
+    fields(name = name, content.len = content.len(), local_branch.id = ?local_branch.id())
+)]
 async fn update_file(
     parent: &Directory,
     name: &str,

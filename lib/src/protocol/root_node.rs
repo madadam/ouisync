@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 use super::{NodeState, Proof, Summary};
-use crate::{crypto::sign::PublicKey, ord};
+use crate::{VersionVector, crypto::sign::PublicKey, ord};
 
 pub(crate) type SnapshotId = u32;
 
@@ -10,6 +10,17 @@ pub struct RootNode {
     pub snapshot_id: SnapshotId,
     pub proof: Proof,
     pub summary: Summary,
+}
+
+impl RootNode {
+    /// Version vector to calculate version vectors of entries to be updated in the next snapshot
+    /// following after this one.
+    pub fn version_vector_bump(&self) -> VersionVector {
+        VersionVector::single(
+            self.proof.writer_id,
+            self.proof.version_vector.get(&self.proof.writer_id) + 1,
+        )
+    }
 }
 
 /// Kind of root node.

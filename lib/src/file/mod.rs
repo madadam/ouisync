@@ -3,7 +3,7 @@ use crate::{
     branch::Branch,
     directory::{Directory, ParentContext},
     error::{Error, Result},
-    protocol::{BLOCK_SIZE, Bump, Locator, SingleBlockPresence},
+    protocol::{BLOCK_SIZE, Locator, SingleBlockPresence},
     store::{Changeset, ReadTransaction},
     version_vector::VersionVector,
 };
@@ -191,12 +191,7 @@ impl File {
 
         self.blob.flush(&mut tx, &mut changeset).await?;
         self.parent
-            .bump(
-                &mut tx,
-                &mut changeset,
-                self.branch().clone(),
-                Bump::increment(*self.branch().id()),
-            )
+            .bump(&mut tx, &mut changeset, self.branch().clone())
             .await?;
 
         changeset
@@ -373,7 +368,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn multiple_consecutive_modifications_of_forked_file() {
         // This test makes sure that modifying a forked file properly updates the file metadata so
-        // subsequent modifications work correclty.
+        // subsequent modifications work correctly.
 
         let (_base_dir, [branch0, branch1]) = setup().await;
 

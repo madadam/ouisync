@@ -6,9 +6,9 @@ use crate::{
     db,
     error::Error,
     event::EventSender,
-    protocol::{BLOCK_SIZE, Bump},
+    protocol::BLOCK_SIZE,
     store::{Store, WriteTransaction},
-    test_utils,
+    test_utils::{self, init_log},
 };
 use proptest::collection::vec;
 use rand::{distr::StandardUniform, prelude::*};
@@ -391,6 +391,7 @@ async fn truncate_marks_as_dirty() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn modify_blob() {
+    init_log();
     let (mut rng, _base_dir, store, [branch]) = setup(0).await;
 
     let mut tx = store.begin_write().await.unwrap();
@@ -406,7 +407,7 @@ async fn modify_blob() {
         .await
         .unwrap();
     blob.flush(&mut tx, &mut changeset).await.unwrap();
-    changeset.bump(Bump::increment(*branch.id()));
+    changeset.bump(tx.version_vector_bump(branch.id()).await.unwrap());
     changeset
         .apply(&mut tx, branch.id(), branch.keys().write().unwrap())
         .await
@@ -428,7 +429,7 @@ async fn modify_blob() {
         .await
         .unwrap();
     blob.flush(&mut tx, &mut changeset).await.unwrap();
-    changeset.bump(Bump::increment(*branch.id()));
+    changeset.bump(tx.version_vector_bump(branch.id()).await.unwrap());
     changeset
         .apply(&mut tx, branch.id(), branch.keys().write().unwrap())
         .await

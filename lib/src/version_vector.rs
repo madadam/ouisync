@@ -31,10 +31,12 @@ impl VersionVector {
         Self(BTreeMap::new())
     }
 
+    pub fn single(writer_id: PublicKey, version: u64) -> Self {
+        Self(BTreeMap::from([(writer_id, version)]))
+    }
+
     pub fn first(writer_id: PublicKey) -> Self {
-        let mut vv = Self::new();
-        vv.increment(writer_id);
-        vv
+        Self::single(writer_id, 1)
     }
 
     /// Inserts an entry into this version vector. If the entry already exists, it's overwritten

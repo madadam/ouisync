@@ -453,7 +453,7 @@ mod trash {
     use super::*;
     use crate::{
         crypto::sign::PublicKey,
-        protocol::{BlockId, Bump},
+        protocol::BlockId,
         store::{Changeset, ReadTransaction, WriteTransaction},
     };
     use futures_util::TryStreamExt;
@@ -690,7 +690,10 @@ mod trash {
             if let Some((local_branch, write_keys)) = &local_branch_and_write_keys {
                 let mut changeset = Changeset::new();
                 remove_local_nodes(&mut tx, &mut changeset, &batch).await?;
-                changeset.bump(Bump::increment(*local_branch.id()));
+
+                let bump = tx.version_vector_bump(local_branch.id()).await?;
+                changeset.bump(bump);
+
                 changeset
                     .apply(&mut tx, local_branch.id(), write_keys)
                     .await?;

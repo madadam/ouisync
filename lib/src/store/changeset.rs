@@ -1,10 +1,13 @@
+use std::cmp::Ordering;
+
 use super::{WriteTransaction, block::BlockWriter, error::Error, patch::Patch};
 use crate::{
+    VersionVector,
     crypto::{
         Hash,
         sign::{Keypair, PublicKey},
     },
-    protocol::{Block, BlockId, Bump, SingleBlockPresence},
+    protocol::{Block, BlockId, SingleBlockPresence},
 };
 
 /// Recorded changes to be applied to the store as a single unit.
@@ -13,8 +16,7 @@ pub(crate) struct Changeset {
     links: Vec<(Hash, BlockId, SingleBlockPresence)>,
     unlinks: Vec<(Hash, Option<BlockId>)>,
     blocks: Vec<Block>,
-    bump: Bump,
-    bump_force: bool,
+    bump: VersionVector,
 }
 
 impl Changeset {
@@ -51,7 +53,10 @@ impl Changeset {
             }
         }
 
-        if self.bump_force && self.bump.changes(patch.version_vector()) {
+        if matches!(
+            patch.version_vector().partial_cmp(&self.bump),
+            Some(Ordering::Less) | None,
+        ) {
             changed = true;
         }
 
@@ -97,16 +102,8 @@ impl Changeset {
         self.blocks.push(block);
     }
 
-    /// Update the root version vector. By default the vv is bumped only if this changeset actually
-    /// changes anything (i.e., links and/or unlinks blocks). To force the bump even if there are
-    /// no changes, call also `force_bump(true)`.
-    pub fn bump(&mut self, bump: Bump) {
+    /// Update the root version vector by merging it with the given vector.
+    pub fn bump(&mut self, bump: VersionVector) {
         self.bump = bump;
-    }
-
-    /// Set whether to update the root version vector even if there are no changes (i.e., no blocks
-    /// added or removed). Default is `false`.
-    pub fn force_bump(&mut self, force: bool) {
-        self.bump_force = force;
     }
 }

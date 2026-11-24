@@ -173,10 +173,9 @@ async fn concurrent_read_and_create_dir() {
     let path = "/dir";
     let repo = Arc::new(repo);
 
-    // The deadlock here happened because the reader lock when opening the directory is
-    // acquired in the opposite order to the writer lock acqurired from flushing. I.e. the
-    // reader lock acquires `/` and then `/dir`, but flushing acquires `/dir` first and
-    // then `/`.
+    // The deadlock here happened because the reader lock when opening the directory is acquired in
+    // the opposite order to the writer lock acquired from flushing. I.e. the reader lock acquires
+    // `/` and then `/dir`, but flushing acquires `/dir` first and then `/`.
     let create_dir = scoped_task::spawn({
         let repo = repo.clone();
         async move {
@@ -735,7 +734,7 @@ async fn version_vector_deep_hierarchy() {
         let dir = dirs
             .last_mut()
             .unwrap()
-            .create_directory(format!("dir-{i}"), rand::random(), &VersionVector::new())
+            .create_directory(format!("dir-{i}"), rand::random())
             .await
             .unwrap();
         dirs.push(dir);
@@ -788,7 +787,7 @@ async fn version_vector_fork() {
     time::timeout(Duration::from_secs(5), async move {
         let mut remote_root = remote_branch.open_or_create_root().await.unwrap();
         let mut remote_parent = remote_root
-            .create_directory("parent".into(), rand::random(), &VersionVector::new())
+            .create_directory("parent".into(), rand::random())
             .await
             .unwrap();
         let mut file = create_file_in_directory(&mut remote_parent, "foo.txt", &[]).await;

@@ -8,7 +8,7 @@ use crate::{
     event::{EventScope, EventSender, Payload},
     file::File,
     path,
-    protocol::{BlockId, Locator, Proof, RootNodeFilter},
+    protocol::{BlockId, Locator, Proof, RootNode, RootNodeFilter},
     store::{self, Store},
     version_vector::VersionVector,
 };
@@ -66,13 +66,16 @@ impl Branch {
     }
 
     pub(crate) async fn proof(&self) -> Result<Proof> {
+        Ok(self.root_node().await?.proof)
+    }
+
+    async fn root_node(&self) -> Result<RootNode> {
         Ok(self
             .store
             .acquire_read()
             .await?
             .load_latest_approved_root_node(self.id(), RootNodeFilter::Any)
-            .await?
-            .proof)
+            .await?)
     }
 
     pub(crate) fn keys(&self) -> &AccessKeys {
@@ -88,7 +91,7 @@ impl Branch {
     }
 
     pub(crate) async fn open_or_create_root(&self) -> Result<Directory> {
-        Directory::open_or_create_root(self.clone(), VersionVector::new()).await
+        Directory::open_or_create_root(self.clone(), 1).await
     }
 
     /// Ensures that the directory at the specified path exists including all its ancestors.
@@ -113,12 +116,8 @@ impl Branch {
                     let next = if let Some(next) = next {
                         next
                     } else {
-                        curr.create_directory(
-                            name.to_string(),
-                            rand::random(),
-                            &VersionVector::new(),
-                        )
-                        .await?
+                        curr.create_directory(name.to_string(), rand::random())
+                            .await?
                     };
 
                     curr = next;
