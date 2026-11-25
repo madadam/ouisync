@@ -72,8 +72,7 @@ impl JointDirectory {
     /// same file are returned as separate `JointEntryRef::File` entries. Multiple concurrent
     /// versions of the same directory are returned as a single `JointEntryRef::Directory` entry.
     pub fn entries(&self) -> impl Iterator<Item = JointEntryRef<'_>> {
-        self.merge_entries()
-            .flat_map(|(_, merge)| merge.ignore_tombstones())
+        self.merge_entries().flat_map(|(_, merge)| merge.existing)
     }
 
     fn merge_entries(&self) -> impl Iterator<Item = (&str, Merge<'_>)> {
@@ -97,23 +96,26 @@ impl JointDirectory {
                 .filter_map(move |dir| dir.lookup(name).ok()),
             self.local_branch.as_ref(),
         )
-        .ignore_tombstones()
+        .existing
     }
 
     /// Looks up single entry with the specified name if it is unique.
     ///
     /// - If there is only one version of a entry with the specified name, it is returned.
+    ///
     /// - If there are multiple versions and all of them are files, an `AmbiguousEntry` error is
     ///   returned. To lookup a single version, include a disambiguator in the `name`.
+    ///
     /// - If there are multiple versions and all of them are directories, they are merged into a
     ///   single `JointEntryRef::Directory` and returned.
-    /// - Finally, if there are both files and directories, only the directories are retured (merged
-    ///   into a `JointEntryRef::Directory`) and the files are discarded. This is so it's possible
-    ///   to unambiguously lookup a directory even in the presence of conflicting files.
+    ///
+    /// - Finally, if there are both files and directories, only the directories are returned
+    ///   (merged into a `JointEntryRef::Directory`) and the files are discarded. This is so it's
+    ///   possible to unambiguously lookup a directory even in the presence of conflicting files.
     pub fn lookup_unique<'a>(&'a self, name: &'a str) -> Result<JointEntryRef<'a>> {
         // First try exact match as it is more common.
         let mut entries =
-            Merge::new(self.entry_versions(name), self.local_branch.as_ref()).ignore_tombstones();
+            Merge::new(self.entry_versions(name), self.local_branch.as_ref()).existing;
         if let Some(entry) = entries.next() {
             if entries.next().is_none() {
                 return Ok(entry);
@@ -128,7 +130,7 @@ impl JointDirectory {
         let branch_id_prefix = branch_id_prefix.ok_or(Error::EntryNotFound)?;
 
         let mut entries = Merge::new(self.entry_versions(name), self.local_branch.as_ref())
-            .ignore_tombstones()
+            .existing
             .filter(|entry| entry.first_branch().id().starts_with(&branch_id_prefix));
 
         let first = entries.next().ok_or(Error::EntryNotFound)?;
@@ -257,7 +259,7 @@ impl JointDirectory {
     ///   function proceeds as far as it can, but the conflicting files remain unmerged. It signals
     ///   this by returning `MergeStatus::Conflict`.
     /// - If the local version was already up-to-date, performs no change and returns
-    ///   `MergeStatus::Unchaged`.
+    ///   `MergeStatus::Unchanged`.
     /// - Otherwise, returns `MergeStatus::Completed`.
     #[async_recursion]
     pub async fn merge<'a>(&'a mut self) -> Result<(MergeStatus, &'a Directory)> {
@@ -283,73 +285,83 @@ impl JointDirectory {
         let local_branch = local_version.branch().clone();
 
         let mut conflict = false;
-        let mut check_for_removal = Vec::new();
+
+        // Need to delay inserting the tombstones to after processing all entries to work around the
+        // borrow checker.
+        let mut tombstones = Vec::new();
 
         for (name, merge) in self.merge_entries() {
-            match merge {
-                Merge::Existing(existing) => {
-                    for entry in existing {
-                        match entry {
-                            JointEntryRef::File(entry) => {
-                                match entry.fork(&local_branch).await {
-                                    Ok(()) => {}
-                                    Err(Error::EntryExists) => {
-                                        // This error indicates the local and the remote files are in conflict and
-                                        // so can't be automatically merged. We still proceed with merging the
-                                        // remaining entries but we won't mark this directory as merged (by bumping its
-                                        // vv) to prevent the conflicting remote file from being collected.
-                                        conflict = true;
-                                    }
-                                    Err(error) => return Err(error),
-                                }
+            for entry in merge.existing {
+                match entry {
+                    JointEntryRef::File(entry) => {
+                        match entry.fork(&local_branch).await {
+                            Ok(()) => {}
+                            Err(Error::EntryExists) => {
+                                // This error indicates the local and the remote files are in conflict and
+                                // so can't be automatically merged. We still proceed with merging the
+                                // remaining entries but we won't mark this directory as merged (by bumping its
+                                // vv) to prevent the conflicting remote file from being collected.
+                                conflict = true;
                             }
-                            JointEntryRef::Directory(entry) => {
-                                let mut dir = entry
-                                    .open_with(
-                                        MissingVersionStrategy::Fail,
-                                        DirectoryFallback::Disabled,
-                                    )
-                                    .await?;
-                                match dir
-                                    .merge()
-                                    .instrument(tracing::info_span!("dir", message = name))
-                                    .await
-                                {
-                                    Ok((MergeStatus::Conflict, _)) => {
-                                        conflict = true;
-                                    }
-                                    Ok((MergeStatus::Completed | MergeStatus::Unchanged, _)) => (),
-                                    Err(Error::EntryExists) => {
-                                        // The directory is concurrent with a tombstone in the
-                                        // local branch (e.g., it was modified remotely while being
-                                        // removed or moved locally). Same as with files, treat it
-                                        // as a conflict: proceed with the remaining entries but
-                                        // don't mark this directory as merged.
-                                        conflict = true;
-                                    }
-                                    Err(error) => return Err(error),
-                                }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    JointEntryRef::Directory(entry) => {
+                        let mut dir = entry
+                            .open_with(MissingVersionStrategy::Fail, DirectoryFallback::Disabled)
+                            .await
+                            .inspect_err(|error| tracing::error!(?error))?;
+                        match dir
+                            .merge()
+                            .instrument(tracing::info_span!("dir", message = name))
+                            .await
+                        {
+                            Ok((MergeStatus::Conflict, _)) => {
+                                conflict = true;
                             }
+                            Ok((MergeStatus::Completed | MergeStatus::Unchanged, _)) => (),
+                            // TODO: conflicting directory and tombstone should be handled by
+                            // preferring the directory so this branch should never be taken. Once
+                            // it is implemented, remove it.
+                            Err(Error::EntryExists) => {
+                                // The directory is concurrent with a tombstone in the local branch
+                                // (e.g., it was modified remotely while being removed or moved
+                                // locally). Same as with files, treat it as a conflict: proceed
+                                // with the remaining entries but don't mark this directory as
+                                // merged.
+                                conflict = true;
+                            }
+                            Err(error) => return Err(error),
                         }
                     }
                 }
-                Merge::Tombstone(tombstone) => {
-                    check_for_removal.push((name.to_owned(), tombstone));
-                }
+            }
+
+            if let Some(tombstone) = merge.tombstone {
+                tombstones.push((name.to_owned(), tombstone));
             }
         }
 
         // unwrap is ok because we ensured the local version exists by calling `fork` at the
         // beginning of this function.
         let local_version = self.local_version_mut().unwrap();
-        local_version.refresh().await?;
+        local_version
+            .refresh()
+            .await
+            .inspect_err(|error| tracing::error!(?error))?;
 
-        for (name, tombstone) in check_for_removal {
-            local_version.create_tombstone(&name, tombstone).await?;
+        for (name, tombstone) in tombstones {
+            local_version
+                .create_tombstone(&name, tombstone)
+                .await
+                .inspect_err(|error| tracing::error!(?error))?;
         }
 
         if !conflict {
-            local_version.finalize_merge(&new_version_vector).await?;
+            local_version
+                .finalize_merge(&new_version_vector)
+                .await
+                .inspect_err(|error| tracing::error!(?error))?;
         }
 
         if tracing::enabled!(tracing::Level::TRACE) {
@@ -638,7 +650,7 @@ pub enum MissingVersionStrategy {
 pub enum MergeStatus {
     /// All entries successfully merged
     Completed,
-    /// Some conflict occured. Only the non-conflicting entries merged
+    /// Some conflict occurred. Only the non-conflicting entries merged
     Conflict,
     /// Nothing merged because the local version was already up-to-date
     Unchanged,
@@ -649,11 +661,11 @@ pub enum MergeStatus {
 // `EntryRef::Directory` items into a single `JointDirectoryRef` item but keeping `EntryRef::File`
 // items separate.
 #[derive(Clone)]
-enum Merge<'a> {
-    // zero or more versions of an entry...
-    Existing(Existing<'a>),
-    // ...or a single tombstone
-    Tombstone(EntryTombstoneData),
+struct Merge<'a> {
+    // zero or more versions of an entry (file or directory)
+    existing: Existing<'a>,
+    // zero or one tombstone (multiple tombstones are merged into one)
+    tombstone: Option<EntryTombstoneData>,
 }
 
 #[derive(Default, Clone)]
@@ -728,7 +740,6 @@ impl<'a> Merge<'a> {
             match entry {
                 EntryRef::File(file) => files.push_back(file),
                 EntryRef::Directory(dir) => directories.push(dir),
-                EntryRef::Tombstone(_) if !files.is_empty() || !directories.is_empty() => continue,
                 EntryRef::Tombstone(new_tombstone) => {
                     let new_tombstone = if let Some(mut old_tombstone) = tombstone.take() {
                         old_tombstone.merge(new_tombstone.data());
@@ -744,23 +755,14 @@ impl<'a> Merge<'a> {
 
         let needs_disambiguation = files.len() + if directories.is_empty() { 0 } else { 1 } > 1;
 
-        match tombstone {
-            Some(tombstone) if files.is_empty() && directories.is_empty() => {
-                Self::Tombstone(tombstone)
-            }
-            Some(_) | None => Self::Existing(Existing {
+        Self {
+            existing: Existing {
                 files,
                 directories,
                 needs_disambiguation,
                 local_branch,
-            }),
-        }
-    }
-
-    fn ignore_tombstones(self) -> Existing<'a> {
-        match self {
-            Self::Existing(existing) => existing,
-            Self::Tombstone(_) => Existing::default(),
+            },
+            tombstone,
         }
     }
 }

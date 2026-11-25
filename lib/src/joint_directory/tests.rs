@@ -1150,82 +1150,130 @@ async fn move_entry_created_by_other_writer() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn merge_directory_concurrent_with_tombstone() {
-    test_utils::init_log();
+// When merging concurrent file/directory and tombstone (that is, one branch updated the
+// file/directory and the other deleted it concurrently), the file/directory always wins.
+mod merge_concurrent_update_and_delete {
+    use super::*;
 
-    let (_base_dir, [branch_l, branch_r]) = setup().await;
-
-    // local: create "dir/a"
-    let mut root_l = branch_l.open_or_create_root().await.unwrap();
-    let mut dir_l = root_l
-        .create_directory("dir".to_owned(), rand::random())
-        .await
-        .unwrap();
-    drop(create_file(&mut dir_l, "a", b"a").await);
-    drop(dir_l);
-
-    // remote: merge local, then create "dir/b" and an unrelated file "c"
-    merge(&[&branch_r, &branch_l])
-        .instrument(tracing::info_span!("merge local -> remote"))
-        .await
-        .unwrap();
-    let mut root_r = branch_r.open_or_create_root().await.unwrap();
-
-    let mut dir_r = root_r
-        .lookup("dir")
-        .unwrap()
-        .directory()
-        .unwrap()
-        .open(DirectoryFallback::Disabled)
-        .await
-        .unwrap();
-    drop(create_file(&mut dir_r, "b", b"b").await);
-    drop(dir_r);
-    root_r.refresh().await.unwrap();
-    drop(create_file(&mut root_r, "c", b"c").await);
-
-    // local: move "dir" to "moved", concurrently with the remote modification. This leaves a
-    // tombstone at "dir" which is concurrent with the remote version of "dir".
-    root_l.refresh().await.unwrap();
-    let mut dst_dir = root_l.clone();
-    root_l
-        .move_entry("dir", &mut dst_dir, "moved")
-        .instrument(tracing::info_span!("move dir -> moved"))
-        .await
-        .unwrap();
-
-    // The concurrent directory and tombstone are reported as conflict, not as error, and it stays
-    // that way on subsequent merges.
-    for i in 0..2 {
-        assert_matches!(
-            merge(&[&branch_l, &branch_r])
-                .instrument(tracing::info_span!("merge remote -> local", i))
-                .await,
-            Ok(MergeStatus::Conflict)
-        );
+    enum LocalAction {
+        Update,
+        Delete,
     }
 
-    root_l.refresh().await.unwrap();
+    #[tokio::test]
+    #[instrument]
+    async fn local_file_remote_tombstone() {
+        case(EntryType::File, LocalAction::Update).await
+    }
 
-    // The unrelated file is still merged.
-    assert_matches!(root_l.lookup("c"), Ok(EntryRef::File(_)));
+    #[tokio::test]
+    #[instrument]
+    async fn local_tombstone_remote_file() {
+        case(EntryType::File, LocalAction::Delete).await
+    }
 
-    // The moved directory is intact.
-    let moved = root_l
-        .lookup("moved")
-        .unwrap()
-        .directory()
-        .unwrap()
-        .open(DirectoryFallback::Disabled)
-        .await
-        .unwrap();
-    assert_matches!(moved.lookup("a"), Ok(EntryRef::File(_)));
+    #[tokio::test]
+    #[instrument]
+    async fn local_directory_remote_tombstone() {
+        case(EntryType::Directory, LocalAction::Update).await
+    }
 
-    // The remote directory is preferred over the tombstone.
-    let root_r = branch_r.open_or_create_root().await.unwrap();
-    let joint = JointDirectory::new(Some(branch_l.clone()), [root_l, root_r]);
-    assert_matches!(joint.lookup_unique("dir"), Ok(JointEntryRef::Directory(_)));
+    #[tokio::test]
+    #[instrument]
+    async fn local_tombstone_remote_directory() {
+        case(EntryType::Directory, LocalAction::Delete).await
+    }
+
+    async fn case(content: EntryType, local: LocalAction) {
+        test_utils::init_log();
+
+        let (_base_dir, [branch_a, branch_b]) = setup().await;
+
+        // A: create file/directory
+        let mut root_a = branch_a.open_or_create_root().await.unwrap();
+        match content {
+            EntryType::File => {
+                create_file(&mut root_a, "entry", b"a v1").await;
+            }
+            EntryType::Directory => {
+                root_a
+                    .create_directory("entry".to_owned(), rand::random())
+                    .await
+                    .unwrap();
+            }
+        }
+
+        // B: merge with A
+        merge(&[&branch_b, &branch_a])
+            .instrument(tracing::info_span!("merge 1"))
+            .await
+            .unwrap();
+
+        // B: delete the file/directory
+        let mut root_b = branch_b.open_or_create_root().await.unwrap();
+        let entry_vv = root_b.lookup("entry").unwrap().version_vector().clone();
+        root_b
+            .remove_entry("entry", branch_b.id(), &entry_vv)
+            .await
+            .unwrap();
+
+        // A: update the file/directory concurrently
+        match content {
+            EntryType::File => {
+                update_file(&root_a, "entry", b"a v2", &branch_a).await;
+            }
+            EntryType::Directory => {
+                root_a
+                    .lookup("entry")
+                    .unwrap()
+                    .directory()
+                    .unwrap()
+                    .open(DirectoryFallback::Disabled)
+                    .await
+                    .unwrap()
+                    .create_file("file".to_owned())
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let (branch_l, branch_r) = match local {
+            LocalAction::Update => (branch_a, branch_b),
+            LocalAction::Delete => (branch_b, branch_a),
+        };
+
+        let mut root_l = branch_l.open_or_create_root().await.unwrap();
+        let entry_vv_l_before = root_l.lookup("entry").unwrap().version_vector().clone();
+
+        let root_r = branch_r.open_or_create_root().await.unwrap();
+        let entry_vv_r_before = root_r.lookup("entry").unwrap().version_vector().clone();
+
+        // local: merge with remote - no conflict
+        let status = merge(&[&branch_l, &branch_r])
+            .instrument(tracing::info_span!("merge 2"))
+            .await
+            .unwrap();
+        assert_matches!(status, MergeStatus::Completed);
+
+        // local: the file/directory exists
+        root_l.refresh().await.unwrap();
+        let entry = root_l.lookup("entry").unwrap();
+        match content {
+            EntryType::File => assert_matches!(entry, EntryRef::File(_)),
+            EntryType::Directory => assert_matches!(entry, EntryRef::Directory(_)),
+        }
+
+        // local: the file/directory is happens-after both the local and remote pre-merge entry
+        let entry_vv_l_after = entry.version_vector();
+        assert_eq!(
+            entry_vv_l_after.partial_cmp(&entry_vv_l_before),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            entry_vv_l_after.partial_cmp(&entry_vv_r_before),
+            Some(Ordering::Greater)
+        );
+    }
 }
 
 // TODO: merge directory with missing blocks

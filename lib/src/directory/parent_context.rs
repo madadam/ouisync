@@ -46,11 +46,7 @@ impl ParentContext {
     // TODO: move this function to the `file` mod.
     #[instrument(
         skip_all,
-        fields(
-            src_branch_id = ?src_branch.id(),
-            blob_id,
-        ),
-        err(Debug)
+        fields(src_branch_id = ?src_branch.id(), blob_id),
     )]
     pub async fn fork(&self, src_branch: &Branch, dst_branch: &Branch) -> Result<Self> {
         let directory = self.open(src_branch.clone()).await?;

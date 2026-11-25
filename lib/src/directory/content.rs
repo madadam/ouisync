@@ -63,14 +63,23 @@ impl Content {
     }
 
     /// Inserts an entry into this directory.
-    pub fn insert(&mut self, name: String, new_data: EntryData) -> Result<(), EntryExists> {
+    pub fn insert(&mut self, name: String, mut new_data: EntryData) -> Result<(), EntryExists> {
         match self.entries.entry(name) {
             Entry::Vacant(entry) => {
                 entry.insert(new_data);
             }
             Entry::Occupied(mut entry) => {
-                check_replace(entry.get(), &new_data)?;
-                entry.insert(new_data);
+                let instructions = check_replace(entry.get(), &new_data)?;
+
+                if instructions.replace {
+                    new_data.version_vector_mut().merge(&instructions.bump);
+                    entry.insert(new_data);
+                } else {
+                    entry
+                        .get_mut()
+                        .version_vector_mut()
+                        .merge(&instructions.bump);
+                }
             }
         }
 
@@ -85,7 +94,7 @@ impl Content {
         new_data: &EntryData,
     ) -> Result<Option<BlobId>, EntryExists> {
         if let Some(old_data) = self.entries.get(name) {
-            check_replace(old_data, new_data)
+            Ok(check_replace(old_data, new_data)?.old_blob_id)
         } else {
             Ok(None)
         }
@@ -139,7 +148,20 @@ fn deserialize_entries<'a, T: Deserialize<'a>>(input: &'a [u8]) -> Result<T, Err
     bincode::deserialize(input).map_err(|_| Error::MalformedDirectory)
 }
 
-fn check_replace(old: &EntryData, new: &EntryData) -> Result<Option<BlobId>, EntryExists> {
+// Instructions for replacing entries
+struct ReplaceInstructions {
+    // blob id of the old entry, if any
+    old_blob_id: Option<BlobId>,
+    // whether to proceed with the replace or keep the existing entry
+    replace: bool,
+    // update the version vector of the new entry (if `replace` is `true`) or the old entry (if
+    // `replace` is `false`).
+    bump: VersionVector,
+}
+
+// If the old entry can be replaced with the new one, returns the blob_id of the old entry (if any).
+// Otherwise returns `EntryExists` error with details about why the entry can't be replaced.
+fn check_replace(old: &EntryData, new: &EntryData) -> Result<ReplaceInstructions, EntryExists> {
     // Replace entries only if the new version is more up to date than the old version.
 
     match (
@@ -147,12 +169,20 @@ fn check_replace(old: &EntryData, new: &EntryData) -> Result<Option<BlobId>, Ent
         new,
         old,
     ) {
-        (Some(Ordering::Greater), _, _) => Ok(old.blob_id().copied()),
+        (Some(Ordering::Greater), _, _) => Ok(ReplaceInstructions {
+            old_blob_id: old.blob_id().copied(),
+            replace: true,
+            bump: VersionVector::new(),
+        }),
         // Replacing tombstone with a directory with the same version vector is a special case
         // that's allowed only to support merging: forked directory is created with the same version
         // vector as the existing tombstone, or empty version vector if no such tombstone exists.
         (Some(Ordering::Equal), EntryData::Directory(_), EntryData::Tombstone(_)) => {
-            Ok(new.blob_id().copied())
+            Ok(ReplaceInstructions {
+                old_blob_id: None,
+                replace: true,
+                bump: VersionVector::new(),
+            })
         }
         (Some(Ordering::Equal | Ordering::Less), EntryData::File(new), EntryData::File(old))
             if new.blob_id == old.blob_id =>
@@ -174,6 +204,22 @@ fn check_replace(old: &EntryData, new: &EntryData) -> Result<Option<BlobId>, Ent
             EntryData::File(_) | EntryData::Directory(_) | EntryData::Tombstone(_),
             EntryData::File(_) | EntryData::Directory(_) | EntryData::Tombstone(_),
         ) => Err(EntryExists::Different),
+        // Conflict between file/directory and tombstone is automatically resolved by preferring the
+        // file/directory.
+        (None, EntryData::File(_) | EntryData::Directory(_), EntryData::Tombstone(_)) => {
+            Ok(ReplaceInstructions {
+                old_blob_id: None,
+                replace: true,
+                bump: old.version_vector().clone(),
+            })
+        }
+        (None, EntryData::Tombstone(_), EntryData::File(_) | EntryData::Directory(_)) => {
+            Ok(ReplaceInstructions {
+                old_blob_id: old.blob_id().copied(),
+                replace: false,
+                bump: new.version_vector().clone(),
+            })
+        }
         (None, _, _) => Err(EntryExists::Different),
     }
 }

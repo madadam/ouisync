@@ -265,6 +265,9 @@ impl Directory {
     /// Creates a tombstone for entry with the given name. If the entry exists, this effectively
     /// removes it. If it doesn't exist, it still creates the tombstone.
     ///
+    /// If `tombstone` is happens-before the existing entry (if any), this operation has no effect
+    /// but it's not an error.
+    ///
     /// This method is meant to be used during the merge algorithm which is why it *doesn't* bump
     /// the version vector of this directory (or any of its ancestors). For removing entries
     /// locally, use [`Self::remove_entry`] instead.
@@ -279,26 +282,19 @@ impl Directory {
 
         self.refresh_in(&mut tx).await?;
 
-        match self.lookup(name) {
-            Ok(EntryRef::File(_) | EntryRef::Directory(_)) | Err(Error::EntryNotFound) => (),
-            Ok(EntryRef::Tombstone(old_entry)) => {
-                // Attempt to replace a tombstone with another tombstone whose version vector is
-                // the same or lower is a no-op.
-                if &tombstone.version_vector <= old_entry.version_vector() {
-                    return Ok(());
-                }
-            }
-            Err(e) => return Err(e),
-        }
-
-        let content = self
+        let content = match self
             .begin_insert_entry(
                 &mut tx,
                 &mut changeset,
                 name.to_owned(),
                 EntryData::Tombstone(tombstone),
             )
-            .await?;
+            .await
+        {
+            Ok(content) => content,
+            Err(Error::EntryExists) => return Ok(()),
+            Err(error) => return Err(error),
+        };
 
         self.commit(tx, changeset).await?;
         self.finalize(content);
@@ -446,7 +442,7 @@ impl Directory {
 
     /// Prepares information needed to fork this directory.
     ///
-    /// Returns the parent directory and entry name (unless root) and the current version vectors of
+    /// Returns the parent directory and entry name (unless root) and the current version vector of
     /// this directory
     async fn prepare_fork(&self) -> Result<(Option<(Self, &str)>, VersionVector)> {
         let mut tx = self.branch().store().begin_read().await?;

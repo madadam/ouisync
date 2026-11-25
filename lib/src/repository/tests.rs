@@ -740,16 +740,18 @@ async fn version_vector_deep_hierarchy() {
         dirs.push(dir);
     }
 
-    // Each directory's local version is one less than its parent.
-    for (index, dir) in dirs.iter().skip(1).enumerate() {
+    // The first (root) directory gets version 1. Every next directory gets version of the root
+    // directory + 1 but this also updates version vectors of all its ancestors, so in the end all
+    // directories end up with the same version.
+    for dir in dirs {
         assert_eq!(
             dir.version_vector().await.unwrap(),
-            vv![local_id => (depth - index) as u64]
+            VersionVector::single(local_id, depth as u64 + 1)
         );
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn version_vector_recreate_deleted_file() {
     let (_base_dir, repo) = setup().await;
 
@@ -761,9 +763,12 @@ async fn version_vector_recreate_deleted_file() {
     repo.remove_entry("test.txt").await.unwrap();
 
     let file = repo.create_file("test.txt").await.unwrap();
+
+    // 1 for the root directory, 1 for creating the file, 1 for removing the file and 1 for
+    // re-creating the file.
     assert_eq!(
         file.version_vector().await.unwrap(),
-        vv![local_id => 3 /* = 1*create + 1*remove + 1*create again */]
+        VersionVector::single(local_id, 4)
     );
 }
 
@@ -854,7 +859,7 @@ async fn version_vector_fork() {
     .unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn version_vector_empty_directory() {
     let (_base_dir, repo) = setup().await;
 
@@ -862,7 +867,12 @@ async fn version_vector_empty_directory() {
     let local_id = *local_branch.id();
 
     let dir = repo.create_directory("stuff").await.unwrap();
-    assert_eq!(dir.version_vector().await.unwrap(), vv![local_id => 1]);
+
+    // 1 for the root directory and 1 for the directory itself.
+    assert_eq!(
+        dir.version_vector().await.unwrap(),
+        VersionVector::single(local_id, 2)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -899,7 +909,7 @@ async fn version_vector_moved_non_empty_directory() {
     assert!(vv_1 > vv_0);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn version_vector_file_moved_over_tombstone() {
     let (_base_dir, repo) = setup().await;
 
@@ -912,9 +922,17 @@ async fn version_vector_file_moved_over_tombstone() {
     drop(file);
     repo.remove_entry("old.txt").await.unwrap();
 
-    // The tombstone's vv is the original vv incremented by 1.
-    let branch_id = *repo.local_branch().unwrap().id();
-    let vv_1 = vv_0.incremented(branch_id);
+    let vv_1 = repo
+        .local_branch()
+        .unwrap()
+        .open_root(DirectoryLocking::Enabled, DirectoryFallback::Disabled)
+        .await
+        .unwrap()
+        .lookup("old.txt")
+        .unwrap()
+        .version_vector()
+        .clone();
+    assert!(vv_1 > vv_0);
 
     repo.create_file("new.txt").await.unwrap();
     repo.move_entry("new.txt", "old.txt").await.unwrap();
@@ -933,7 +951,7 @@ async fn version_vector_file_moved_over_tombstone() {
     assert!(vv_2 > vv_1);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn file_conflict_modify_local() {
     let (_base_dir, repo) = setup().await;
 
@@ -948,18 +966,11 @@ async fn file_conflict_modify_local() {
 
     // Create two concurrent versions of the same file.
     let local_file = create_file_in_branch(&local_branch, "test.txt", b"local v1").await;
-
-    assert_eq!(
-        local_file.version_vector().await.unwrap(),
-        vv![local_id => 2]
-    );
+    let local_vv_0 = local_file.version_vector().await.unwrap();
     drop(local_file);
 
     let remote_file = create_file_in_branch(&remote_branch, "test.txt", b"remote v1").await;
-    assert_eq!(
-        remote_file.version_vector().await.unwrap(),
-        vv![remote_id => 2]
-    );
+    let remote_vv_0 = remote_file.version_vector().await.unwrap();
     drop(remote_file);
 
     // Modify the local version.
@@ -970,20 +981,14 @@ async fn file_conflict_modify_local() {
 
     let mut local_file = repo.open_file_version("test.txt", &local_id).await.unwrap();
     assert_eq!(local_file.read_to_end().await.unwrap(), b"local v2");
-    assert_eq!(
-        local_file.version_vector().await.unwrap(),
-        vv![local_id => 3]
-    );
+    assert!(local_file.version_vector().await.unwrap() > local_vv_0);
 
     let mut remote_file = repo
         .open_file_version("test.txt", &remote_id)
         .await
         .unwrap();
     assert_eq!(remote_file.read_to_end().await.unwrap(), b"remote v1");
-    assert_eq!(
-        remote_file.version_vector().await.unwrap(),
-        vv![remote_id => 2]
-    );
+    assert_eq!(remote_file.version_vector().await.unwrap(), remote_vv_0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
