@@ -251,7 +251,8 @@ impl Directory {
                 &mut changeset,
                 name,
                 branch_id,
-                bump.merged(version_vector),
+                version_vector,
+                &bump,
                 TombstoneCause::Removed,
             )
             .await?;
@@ -352,7 +353,7 @@ impl Directory {
             .replaced_version_vector(&mut tx, &data, dst_name)
             .await?
             .merged(&bump);
-        let src_vv = mem::replace(data.version_vector_mut(), dst_vv).merged(&bump);
+        let src_vv = mem::replace(data.version_vector_mut(), dst_vv);
 
         let mut changeset = Changeset::new();
         let dst_content = dst_dir
@@ -382,7 +383,8 @@ impl Directory {
                 &mut changeset,
                 src_name,
                 &branch_id,
-                src_vv,
+                &src_vv,
+                &bump,
                 TombstoneCause::Moved,
             )
             .await?;
@@ -785,23 +787,31 @@ impl Directory {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn begin_remove_entry(
         &mut self,
         tx: &mut ReadTransaction,
         changeset: &mut Changeset,
         name: &str,
         branch_id: &PublicKey,
-        new_vv: VersionVector,
+        old_vv: &VersionVector,
+        bump: &VersionVector,
         cause: TombstoneCause,
     ) -> Result<Content> {
         let new_data = match self.lookup(name) {
-            Ok(old_entry) if branch_id != self.branch().id() => {
+            // Removing a remote entry which has a concurrent local version. Keep the local version
+            // but make it happens-after the removed one.
+            Ok(old_entry)
+                if branch_id != self.branch().id()
+                    && old_entry.version_vector().partial_cmp(old_vv).is_none() =>
+            {
                 let mut new_data = old_entry.clone_data();
-                new_data.version_vector_mut().merge(&new_vv);
+                new_data.version_vector_mut().merge(old_vv);
+                new_data.version_vector_mut().merge(bump);
                 new_data
             }
             Ok(_) | Err(Error::EntryNotFound) => {
-                EntryData::Tombstone(EntryTombstoneData::new(cause, new_vv))
+                EntryData::Tombstone(EntryTombstoneData::new(cause, old_vv.clone().merged(bump)))
             }
             Err(error) => return Err(error),
         };

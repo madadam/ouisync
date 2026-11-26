@@ -561,6 +561,39 @@ async fn remove_concurrent_entry() {
     assert!(*local_vv > remote_vv);
 }
 
+// Removing a remote entry that has already been forked into the local branch (but not modified
+// locally) removes the local copy as well.
+#[tokio::test(flavor = "multi_thread")]
+async fn remove_remote_entry_already_forked() {
+    let (_base_dir, [local_branch, remote_branch]) = setup_multiple::<2>().await;
+
+    let name = "foo.txt";
+
+    let mut remote_root = remote_branch.open_or_create_root().await.unwrap();
+    let mut file = remote_root.create_file(name.to_owned()).await.unwrap();
+    file.flush().await.unwrap();
+    file.fork(local_branch.clone()).await.unwrap();
+    drop(file);
+
+    remote_root.refresh().await.unwrap();
+    let remote_vv = remote_root.lookup(name).unwrap().version_vector().clone();
+
+    let mut local_root = local_branch.open_or_create_root().await.unwrap();
+    assert_matches!(local_root.lookup(name), Ok(EntryRef::File(_)));
+
+    local_root
+        .remove_entry(name, remote_branch.id(), &remote_vv)
+        .await
+        .unwrap();
+
+    let local_vv = assert_matches!(
+        local_root.lookup(name),
+        Ok(EntryRef::Tombstone(entry)) => entry.version_vector()
+    );
+
+    assert!(*local_vv > remote_vv);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn remove_non_existing_local_entry() {
     let (_base_dir, local_branch) = setup().await;
