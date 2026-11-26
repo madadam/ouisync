@@ -196,10 +196,11 @@ mod v1 {
         let new_root_node = if new_root_node.proof.writer_id == this_writer_id {
             // Bump the vv of the local branch
             let hash = new_root_node.proof.hash;
-            let version_vector = new_root_node
-                .proof
-                .into_version_vector()
-                .incremented(this_writer_id);
+
+            let mut version_vector = new_root_node.proof.into_version_vector();
+            let this_version = version_vector.get(&this_writer_id);
+            version_vector.insert(this_writer_id, this_version + 1);
+
             let proof = Proof::new(this_writer_id, version_vector, hash, write_keys);
             let (new_root_node, _) =
                 root_node::create(tx.db(), proof, new_root_node.summary, RootNodeFilter::Any)

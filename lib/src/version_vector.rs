@@ -6,13 +6,7 @@ use sqlx::{
     error::BoxDynError,
     sqlite::{SqliteArgumentValue, SqliteTypeInfo, SqliteValueRef},
 };
-use std::{
-    cmp::Ordering,
-    collections::BTreeMap,
-    fmt,
-    iter::Sum,
-    ops::{Add, AddAssign},
-};
+use std::{cmp::Ordering, collections::BTreeMap, fmt};
 
 /// [Version vector](https://en.wikipedia.org/wiki/Version_vector).
 ///
@@ -31,19 +25,14 @@ impl VersionVector {
         Self(BTreeMap::new())
     }
 
+    /// Creates version vector with a single entry.
     pub fn single(writer_id: PublicKey, version: u64) -> Self {
         Self(BTreeMap::from([(writer_id, version)]))
     }
 
+    /// Same as `Self::single(writer_id, 1)`.
     pub fn first(writer_id: PublicKey) -> Self {
         Self::single(writer_id, 1)
-    }
-
-    /// Inserts an entry into this version vector. If the entry already exists, it's overwritten
-    /// only if the new version is higher than the existing version. This operation is idempotent.
-    pub fn insert(&mut self, writer_id: PublicKey, version: u64) {
-        let old = self.0.entry(writer_id).or_insert(0);
-        *old = (*old).max(version);
     }
 
     /// Retrieves the version corresponding to the given replica id.
@@ -51,16 +40,14 @@ impl VersionVector {
         self.0.get(writer_id).copied().unwrap_or(0)
     }
 
-    /// Increments the version corresponding to the given replica id.
-    pub fn increment(&mut self, writer_id: PublicKey) {
-        let version = self.0.entry(writer_id).or_insert(0);
-        *version += 1;
-    }
-
-    /// Returns `self` with the version corresponding to `writer_id` incremented.
-    pub fn incremented(mut self, writer_id: PublicKey) -> Self {
-        self.increment(writer_id);
-        self
+    /// Inserts an entry into this version vector. If the entry already exists, it's overwritten
+    /// only if the new version is higher than the existing version. This operation is idempotent.
+    ///
+    /// This is equivalent to `self.merge(&VersionVector::single(writer_id, version))` but slightly
+    /// more efficient.
+    pub fn insert(&mut self, writer_id: PublicKey, version: u64) {
+        let old = self.0.entry(writer_id).or_insert(0);
+        *old = (*old).max(version);
     }
 
     /// Merge two version vectors into one. The version of each entry in the resulting vector is
@@ -79,12 +66,14 @@ impl VersionVector {
         self
     }
 
-    /// Saturating subtraction.
-    pub fn saturating_sub(&self, rhs: &Self) -> Self {
-        self.0
-            .iter()
-            .filter_map(|(id, version)| Some((*id, version.checked_sub(rhs.get(id))?)))
-            .collect()
+    /// Returns `self` with the version corresponding to `writer_id` incremented.
+    ///
+    /// Note: this operation is not idempotent and should not be used in production code. It's only
+    /// provided for convenience in tests.
+    #[cfg(test)]
+    pub fn incremented(mut self, writer_id: PublicKey) -> Self {
+        *self.0.entry(writer_id).or_insert(0) += 1;
+        self
     }
 
     pub fn is_empty(&self) -> bool {
@@ -155,42 +144,6 @@ impl FromIterator<(PublicKey, u64)> for VersionVector {
                 vv.insert(key, version);
                 vv
             })
-    }
-}
-
-impl Add for &'_ VersionVector {
-    type Output = VersionVector;
-
-    fn add(self, other: Self) -> Self::Output {
-        let mut output = self.clone();
-        output += other;
-        output
-    }
-}
-
-impl<'a> AddAssign<&'a VersionVector> for VersionVector {
-    fn add_assign(&mut self, rhs: &'a VersionVector) {
-        for (id, version) in &rhs.0 {
-            *self.0.entry(*id).or_default() += version;
-        }
-    }
-}
-
-impl AddAssign for VersionVector {
-    fn add_assign(&mut self, rhs: VersionVector) {
-        *self += &rhs
-    }
-}
-
-impl<'a> Sum<&'a VersionVector> for VersionVector {
-    fn sum<I>(iter: I) -> Self
-    where
-        I: Iterator<Item = &'a VersionVector>,
-    {
-        iter.fold(Self::new(), |mut sum, v| {
-            sum += v;
-            sum
-        })
     }
 }
 
@@ -356,17 +309,6 @@ mod tests {
     }
 
     #[test]
-    fn increment_in_place() {
-        let id = PublicKey::random();
-
-        let mut vv = vv![];
-        assert_eq!(vv.get(&id), 0);
-
-        vv.increment(id);
-        assert_eq!(vv.get(&id), 1);
-    }
-
-    #[test]
     fn merge() {
         let id0 = PublicKey::random();
         let id1 = PublicKey::random();
@@ -398,38 +340,5 @@ mod tests {
         let mut vv = vv![id0 => 1, id1 => 2];
         vv.merge(&vv![id0 => 2, id1 => 1]);
         assert_eq!(vv, vv![id0 => 2, id1 => 2]);
-    }
-
-    #[test]
-    fn add() {
-        let id0 = PublicKey::random();
-        let id1 = PublicKey::random();
-
-        let mut vv = vv![];
-        vv += vv![];
-        assert_eq!(vv, vv![]);
-
-        let mut vv = vv![id0 => 1];
-        vv += vv![id1 => 1];
-        assert_eq!(vv, vv![id0 =>1, id1 => 1]);
-
-        let mut vv = vv![id0 => 1, id1 => 2];
-        vv += vv![id0 => 3];
-        assert_eq!(vv, vv![id0 => 4, id1 => 2]);
-
-        let mut vv = vv![id0 => 3];
-        vv += vv![id0 => 1, id1 => 2];
-        assert_eq!(vv, vv![id0 => 4, id1 => 2]);
-    }
-
-    #[test]
-    fn saturating_sub() {
-        let id0 = PublicKey::random();
-
-        assert_eq!(vv![].saturating_sub(&vv![]), vv![]);
-        assert_eq!(vv![id0 => 1].saturating_sub(&vv![id0 => 1]), vv![]);
-        assert_eq!(vv![id0 => 2].saturating_sub(&vv![id0 => 1]), vv![id0 => 1]);
-        assert_eq!(vv![].saturating_sub(&vv![id0 => 1]), vv![]);
-        assert_eq!(vv![id0 => 1].saturating_sub(&vv![id0 => 2]), vv![]);
     }
 }

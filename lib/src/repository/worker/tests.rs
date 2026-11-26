@@ -48,7 +48,7 @@ async fn prune_sanity_check() {
             .commit()
             .await;
 
-        vv_d.increment(writer_d);
+        vv_d = vv_d.incremented(writer_d);
     }
 
     // C is outdated to A and B and has complete snapshots
@@ -63,7 +63,7 @@ async fn prune_sanity_check() {
             .commit()
             .await;
 
-        vv_c.increment(writer_c);
+        vv_c = vv_c.incremented(writer_c);
     }
 
     // A and B are concurrent
@@ -80,7 +80,7 @@ async fn prune_sanity_check() {
                 .commit()
                 .await;
 
-            vv.increment(writer_id);
+            vv = vv.incremented(writer_id);
         }
     }
 
@@ -189,7 +189,7 @@ async fn do_not_prune_complete_snapshots_if_no_newer_snapshot_is_complete() {
         .commit()
         .await;
 
-    vv.increment(writer);
+    vv = vv.incremented(writer);
 
     // Create newer incomplete snapshot
     let snapshot = Snapshot::generate(&mut rng, 1);
@@ -201,8 +201,6 @@ async fn do_not_prune_complete_snapshots_if_no_newer_snapshot_is_complete() {
         .await
         .commit()
         .await;
-
-    vv.increment(writer);
 
     // Verify all snapshots are present
     assert_matches!(
@@ -268,7 +266,7 @@ async fn do_not_prune_incomplete_snapshots_if_no_newer_snapshot_is_complete() {
             .commit()
             .await;
 
-        vv.increment(writer);
+        vv = vv.incremented(writer);
     }
 
     // Verify all snapshots are present
