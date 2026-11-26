@@ -1573,3 +1573,27 @@ async fn dump_directory_into(
 
     Ok(())
 }
+
+// Removing a remote entry before the merge must not prevent the other entries from being merged
+// later.
+#[tokio::test]
+async fn remove_remote_entry_then_merge() {
+    let (_base_dir, [local, remote]) = setup().await;
+
+    let mut remote_root = remote.open_or_create_root().await.unwrap();
+    create_file(&mut remote_root, "a.txt", b"a").await;
+    create_file(&mut remote_root, "b.txt", b"b").await;
+    remote_root.refresh().await.unwrap();
+
+    let local_root = local.open_or_create_root().await.unwrap();
+    JointDirectory::new(Some(local.clone()), [local_root, remote_root])
+        .remove_entry("b.txt")
+        .await
+        .unwrap();
+
+    assert_matches!(merge(&[&local, &remote]).await, Ok(MergeStatus::Completed));
+
+    let local_root = local.open_or_create_root().await.unwrap();
+    assert_matches!(local_root.lookup("a.txt"), Ok(EntryRef::File(_)));
+    assert_matches!(local_root.lookup("b.txt"), Ok(EntryRef::Tombstone(_)));
+}

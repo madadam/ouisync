@@ -236,10 +236,11 @@ impl Directory {
         // implemented at the upper layers).
         self.check_directory_empty(&mut tx, name).await?;
 
-        let bump = tx
-            .version_vector_bump(self.branch().id())
-            .await?
-            .merged(version_vector);
+        // Note the ancestors are bumped only with the local version. The tombstone also merges the
+        // version vector of the removed entry (so it's happens-after it) but that must not leak
+        // into the ancestors because it might come from a remote branch that hasn't been fully
+        // merged yet.
+        let bump = tx.version_vector_bump(self.branch().id()).await?;
         self.bump_all(&mut tx, &mut changeset, &bump).await?;
 
         let content = self
@@ -248,7 +249,7 @@ impl Directory {
                 &mut changeset,
                 name,
                 branch_id,
-                bump,
+                bump.merged(version_vector),
                 TombstoneCause::Removed,
             )
             .await?;
@@ -355,8 +356,8 @@ impl Directory {
         let dst_content = dst_dir
             .begin_insert_entry(&mut tx, &mut changeset, dst_name.to_owned(), data)
             .await?;
-
         dst_dir.bump_all(&mut tx, &mut changeset, &bump).await?;
+
         changeset
             .apply(
                 &mut tx,
