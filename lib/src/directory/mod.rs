@@ -154,6 +154,7 @@ impl Directory {
     /// to achieve it is to generate it randomly (it has enough bits for collisions to be
     /// astronomically unlikely).
     #[instrument(skip(self))]
+    // TODO: remote the `blob_id` param, generate it randomly inside
     pub(crate) async fn create_directory(&mut self, name: String, blob_id: BlobId) -> Result<Self> {
         let lock = self
             .branch()
@@ -552,7 +553,8 @@ impl Directory {
                     old_blob_id = None;
                     continue;
                 }
-                (Ok(EntryRef::File(_)), _) => return Err(Error::EntryIsFile),
+                // Can't fork directory over existing file
+                (Ok(EntryRef::File(_)), _) => return Err(Error::EntryExists),
                 (Err(error), _) => return Err(error),
             }
         }

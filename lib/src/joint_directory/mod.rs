@@ -297,10 +297,11 @@ impl JointDirectory {
                         match entry.fork(&local_branch).await {
                             Ok(()) => {}
                             Err(Error::EntryExists) => {
-                                // This error indicates the local and the remote files are in conflict and
-                                // so can't be automatically merged. We still proceed with merging the
-                                // remaining entries but we won't mark this directory as merged (by bumping its
-                                // vv) to prevent the conflicting remote file from being collected.
+                                // The file is in conflict with a file or directory in the local
+                                // branch. It can't automatically be merged. We still proceed with
+                                // merging the remaining entries but we won't mark this directory as
+                                // merged (by bumping its vv) to prevent the conflicting remote file
+                                // from being collected.
                                 conflict = true;
                             }
                             Err(error) => return Err(error),
@@ -309,8 +310,7 @@ impl JointDirectory {
                     JointEntryRef::Directory(entry) => {
                         let mut dir = entry
                             .open_with(MissingVersionStrategy::Fail, DirectoryFallback::Disabled)
-                            .await
-                            .inspect_err(|error| tracing::error!(?error))?;
+                            .await?;
                         match dir
                             .merge()
                             .instrument(tracing::info_span!("dir", message = name))
@@ -320,15 +320,9 @@ impl JointDirectory {
                                 conflict = true;
                             }
                             Ok((MergeStatus::Completed | MergeStatus::Unchanged, _)) => (),
-                            // TODO: conflicting directory and tombstone should be handled by
-                            // preferring the directory so this branch should never be taken. Once
-                            // it is implemented, remove it.
                             Err(Error::EntryExists) => {
-                                // The directory is concurrent with a tombstone in the local branch
-                                // (e.g., it was modified remotely while being removed or moved
-                                // locally). Same as with files, treat it as a conflict: proceed
-                                // with the remaining entries but don't mark this directory as
-                                // merged.
+                                // The directory is in conflict with a file in the local branch.
+                                // Treat this the same as conflicting files.
                                 conflict = true;
                             }
                             Err(error) => return Err(error),
@@ -338,6 +332,7 @@ impl JointDirectory {
             }
 
             if let Some(tombstone) = merge.tombstone {
+                tracing::info!(name, "merge 3");
                 tombstones.push((name.to_owned(), tombstone));
             }
         }

@@ -1119,35 +1119,118 @@ async fn merge_moved_file() {
     assert_eq!(file.read_to_end().await.unwrap(), file_content);
 }
 
-// Moving an entry created by another writer must not change the version of that writer in the
-// root version vector (a local operation must change only the version of the local writer).
-#[tokio::test(flavor = "multi_thread")]
-async fn move_entry_created_by_other_writer() {
+mod merge_concurrent_file_and_directory {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_file_remote_directory() {
+        case(Case::LocalFileRemoteDirectory).await
+    }
+
+    #[tokio::test]
+    async fn local_directory_remote_file() {
+        case(Case::LocalDirectoryRemoteFile).await
+    }
+
+    enum Case {
+        LocalFileRemoteDirectory,
+        LocalDirectoryRemoteFile,
+    }
+
+    async fn case(case: Case) {
+        test_utils::init_log();
+
+        let (_base_dir, [branch_a, branch_b]) = setup().await;
+
+        let mut root_a = branch_a.open_or_create_root().await.unwrap();
+        create_file(&mut root_a, "config", b"...").await;
+
+        let mut root_b = branch_b.open_or_create_root().await.unwrap();
+        root_b
+            .create_directory("config".to_owned(), rand::random())
+            .await
+            .unwrap();
+
+        let (branch_l, branch_r) = match case {
+            Case::LocalFileRemoteDirectory => (branch_a, branch_b),
+            Case::LocalDirectoryRemoteFile => (branch_b, branch_a),
+        };
+
+        let status = merge(&[&branch_l, &branch_r]).await.unwrap();
+        assert_matches!(status, MergeStatus::Conflict);
+
+        root_a.refresh().await.unwrap();
+        root_b.refresh().await.unwrap();
+
+        assert!(root_a.lookup("config").unwrap().is_file());
+        assert!(root_b.lookup("config").unwrap().is_directory());
+    }
+}
+
+#[tokio::test]
+async fn merge_file_over_outdated_directory() {
     let (_base_dir, [branch_a, branch_b]) = setup().await;
 
-    // A creates a file
+    // A: create the directory
     let mut root_a = branch_a.open_or_create_root().await.unwrap();
-    drop(create_file(&mut root_a, "src", b"content").await);
+    root_a
+        .create_directory("config".to_string(), rand::random())
+        .await
+        .unwrap();
 
-    // B merges it
+    // B: merge with A
     merge(&[&branch_b, &branch_a]).await.unwrap();
 
-    let vv_a = branch_a.version_vector().await.unwrap();
-    let vv_b_before = branch_b.version_vector().await.unwrap();
-    assert_eq!(vv_b_before.get(branch_a.id()), vv_a.get(branch_a.id()));
-
-    // B moves (renames) it
+    // B: delete the directory and replace it with a file
     let mut root_b = branch_b.open_or_create_root().await.unwrap();
-    let mut dst_dir = root_b.clone();
-    root_b.move_entry("src", &mut dst_dir, "dst").await.unwrap();
+    let vv = root_b.lookup("config").unwrap().version_vector().clone();
+    root_b
+        .remove_entry("config", branch_b.id(), &vv)
+        .await
+        .unwrap();
+    root_b.create_file("config".to_string()).await.unwrap();
 
-    let vv_b_after = branch_b.version_vector().await.unwrap();
+    // A: merge with B
+    let status = merge(&[&branch_a, &branch_b]).await.unwrap();
+    assert_matches!(status, MergeStatus::Completed);
 
-    assert_eq!(
-        vv_b_after.get(branch_a.id()),
-        vv_b_before.get(branch_a.id()),
-        "B's version vector before move: {vv_b_before:?}, after: {vv_b_after:?}"
-    );
+    root_a.refresh().await.unwrap();
+    assert!(root_a.lookup("config").unwrap().is_file());
+}
+
+// FIXME: forking directory over outdated file is currently broken.
+#[ignore]
+#[tokio::test]
+async fn merge_directory_over_outdated_file() {
+    test_utils::init_log();
+
+    let (_base_dir, [branch_a, branch_b]) = setup().await;
+
+    // A: create the file
+    let mut root_a = branch_a.open_or_create_root().await.unwrap();
+    root_a.create_file("config".to_string()).await.unwrap();
+
+    // B: merge with A
+    merge(&[&branch_b, &branch_a]).await.unwrap();
+
+    // B: delete the file and replace it with a directory
+    let mut root_b = branch_b.open_or_create_root().await.unwrap();
+    let vv = root_b.lookup("config").unwrap().version_vector().clone();
+    root_b
+        .remove_entry("config", branch_b.id(), &vv)
+        .await
+        .unwrap();
+    root_b
+        .create_directory("config".to_string(), rand::random())
+        .await
+        .unwrap();
+
+    // A: merge with B
+    let status = merge(&[&branch_a, &branch_b]).await.unwrap();
+    assert_matches!(status, MergeStatus::Completed);
+
+    root_a.refresh().await.unwrap();
+    assert!(root_a.lookup("config").unwrap().is_directory());
 }
 
 // When merging concurrent file/directory and tombstone (that is, one branch updated the
@@ -1277,6 +1360,37 @@ mod merge_concurrent_update_and_delete {
 }
 
 // TODO: merge directory with missing blocks
+
+// Moving an entry created by another writer must not change the version of that writer in the
+// root version vector (a local operation must change only the version of the local writer).
+#[tokio::test(flavor = "multi_thread")]
+async fn move_entry_created_by_other_writer() {
+    let (_base_dir, [branch_a, branch_b]) = setup().await;
+
+    // A creates a file
+    let mut root_a = branch_a.open_or_create_root().await.unwrap();
+    drop(create_file(&mut root_a, "src", b"content").await);
+
+    // B merges it
+    merge(&[&branch_b, &branch_a]).await.unwrap();
+
+    let vv_a = branch_a.version_vector().await.unwrap();
+    let vv_b_before = branch_b.version_vector().await.unwrap();
+    assert_eq!(vv_b_before.get(branch_a.id()), vv_a.get(branch_a.id()));
+
+    // B moves (renames) it
+    let mut root_b = branch_b.open_or_create_root().await.unwrap();
+    let mut dst_dir = root_b.clone();
+    root_b.move_entry("src", &mut dst_dir, "dst").await.unwrap();
+
+    let vv_b_after = branch_b.version_vector().await.unwrap();
+
+    assert_eq!(
+        vv_b_after.get(branch_a.id()),
+        vv_b_before.get(branch_a.id()),
+        "B's version vector before move: {vv_b_before:?}, after: {vv_b_after:?}"
+    );
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn remove_non_empty_subdirectory() {
