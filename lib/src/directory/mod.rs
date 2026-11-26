@@ -356,6 +356,7 @@ impl Directory {
             .begin_insert_entry(&mut tx, &mut changeset, dst_name.to_owned(), data)
             .await?;
 
+        dst_dir.bump_all(&mut tx, &mut changeset, &bump).await?;
         changeset
             .apply(
                 &mut tx,
@@ -384,7 +385,6 @@ impl Directory {
             .await?;
 
         src_dir.bump_all(&mut tx, &mut changeset, &bump).await?;
-        dst_dir.bump_all(&mut tx, &mut changeset, &bump).await?;
 
         src_dir.commit(tx, changeset).await?;
 

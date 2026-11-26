@@ -332,7 +332,6 @@ impl JointDirectory {
             }
 
             if let Some(tombstone) = merge.tombstone {
-                tracing::info!(name, "merge 3");
                 tombstones.push((name.to_owned(), tombstone));
             }
         }

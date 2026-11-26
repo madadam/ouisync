@@ -228,6 +228,16 @@ async fn move_file_within_branch() {
 
     drop(file);
 
+    // The source is replaced with a tombstone.
+    assert_matches!(
+        branch
+            .open_root(DirectoryLocking::Enabled, DirectoryFallback::Disabled)
+            .await
+            .unwrap()
+            .lookup(file_name),
+        Ok(EntryRef::Tombstone(_))
+    );
+
     //
     // Now move it back from ./aux/ to ./
     //
