@@ -184,10 +184,7 @@ async fn move_file_within_branch() {
 
     // Create a directory with a single file.
     let mut root_dir = branch.open_or_create_root().await.unwrap();
-    let mut aux_dir = root_dir
-        .create_directory("aux".into(), rand::random())
-        .await
-        .unwrap();
+    let mut aux_dir = root_dir.create_directory("aux".into()).await.unwrap();
 
     let mut file = root_dir.create_file(file_name.into()).await.unwrap();
     file.write_all(content).await.unwrap();
@@ -270,10 +267,7 @@ async fn move_non_empty_directory() {
 
     // Create a directory with a single file.
     let mut root_dir = branch.open_or_create_root().await.unwrap();
-    let mut dir = root_dir
-        .create_directory(dir_name.into(), rand::random())
-        .await
-        .unwrap();
+    let mut dir = root_dir.create_directory(dir_name.into()).await.unwrap();
 
     let mut file = dir.create_file(file_name.into()).await.unwrap();
     file.write_all(content).await.unwrap();
@@ -284,7 +278,7 @@ async fn move_non_empty_directory() {
     drop(dir);
 
     let mut dst_dir = root_dir
-        .create_directory(dst_dir_name.into(), rand::random())
+        .create_directory(dst_dir_name.into())
         .await
         .unwrap();
 
@@ -330,10 +324,7 @@ async fn remove_subdirectory() {
 
     // Create a directory with a single subdirectory.
     let mut parent_dir = branch.open_or_create_root().await.unwrap();
-    let dir = parent_dir
-        .create_directory(name.into(), rand::random())
-        .await
-        .unwrap();
+    let dir = parent_dir.create_directory(name.into()).await.unwrap();
     let dir_vv = dir.version_vector().await.unwrap();
     drop(dir);
 
@@ -365,10 +356,7 @@ async fn fork_sanity_check() {
 
     // Create a nested directory by branch 0
     let mut root0 = branch0.open_or_create_root().await.unwrap();
-    let dir0 = root0
-        .create_directory("dir".into(), rand::random())
-        .await
-        .unwrap();
+    let dir0 = root0.create_directory("dir".into()).await.unwrap();
 
     // Fork it into branch 1
     let mut dir1 = dir0
@@ -431,20 +419,14 @@ async fn fork_over_tombstone() {
 
     // Create a directory in branch 0 and delete it.
     let mut root0 = branch0.open_or_create_root().await.unwrap();
-    root0
-        .create_directory("dir".into(), rand::random())
-        .await
-        .unwrap();
+    root0.create_directory("dir".into()).await.unwrap();
 
     let vv = root0.lookup("dir").unwrap().version_vector().clone();
     root0.remove_entry("dir", branch0.id(), &vv).await.unwrap();
 
     // Create a directory with the same name in branch 1.
     let mut root1 = branch1.open_or_create_root().await.unwrap();
-    root1
-        .create_directory("dir".into(), rand::random())
-        .await
-        .unwrap();
+    root1.create_directory("dir".into()).await.unwrap();
 
     // Open it by branch 0 and fork it.
     let root1_on_0 = branch1
@@ -475,16 +457,10 @@ async fn fork_over_existing_directory() {
 
     // Create the directories with the same name but different blob id in each branch.
     let mut root0 = branch0.open_or_create_root().await.unwrap();
-    let dir0 = root0
-        .create_directory(name.into(), rand::random())
-        .await
-        .unwrap();
+    let dir0 = root0.create_directory(name.into()).await.unwrap();
 
     let mut root1 = branch1.open_or_create_root().await.unwrap();
-    let _dir1 = root1
-        .create_directory(name.into(), rand::random())
-        .await
-        .unwrap();
+    let _dir1 = root1.create_directory(name.into()).await.unwrap();
 
     // Fork back and forth. Afterwards both dirs should have the same blob id.
     let dir1 = dir0.fork(&branch1).await.unwrap();
@@ -501,10 +477,7 @@ async fn modify_directory_concurrently() {
     // Obtain two instances of the same directory, create a new file in one of them and verify
     // the file also exists in the other after refresh.
 
-    let mut dir0 = root
-        .create_directory("dir".to_owned(), rand::random())
-        .await
-        .unwrap();
+    let mut dir0 = root.create_directory("dir".to_owned()).await.unwrap();
     let mut dir1 = root
         .lookup("dir")
         .unwrap()

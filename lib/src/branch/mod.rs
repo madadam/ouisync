@@ -116,8 +116,7 @@ impl Branch {
                     let next = if let Some(next) = next {
                         next
                     } else {
-                        curr.create_directory(name.to_string(), rand::random())
-                            .await?
+                        curr.create_directory(name.to_string()).await?
                     };
 
                     curr = next;

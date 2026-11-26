@@ -163,16 +163,10 @@ async fn conflict_directories() {
     let (_base_dir, [branch0, branch1]) = setup().await;
 
     let mut root0 = branch0.open_or_create_root().await.unwrap();
-    root0
-        .create_directory("dir".to_owned(), rand::random())
-        .await
-        .unwrap();
+    root0.create_directory("dir".to_owned()).await.unwrap();
 
     let mut root1 = branch1.open_or_create_root().await.unwrap();
-    root1
-        .create_directory("dir".to_owned(), rand::random())
-        .await
-        .unwrap();
+    root1.create_directory("dir".to_owned()).await.unwrap();
 
     let root = JointDirectory::new(Some(branch0.clone()), [root0, root1]);
 
@@ -194,10 +188,7 @@ async fn conflict_file_and_single_version_directory() {
     create_file(&mut root0, "config", &[]).await;
 
     let mut root1 = branch1.open_or_create_root().await.unwrap();
-    root1
-        .create_directory("config".to_owned(), rand::random())
-        .await
-        .unwrap();
+    root1.create_directory("config".to_owned()).await.unwrap();
 
     let root = JointDirectory::new(Some(branch0.clone()), [root0, root1]);
 
@@ -254,16 +245,10 @@ async fn conflict_file_and_multi_version_directory() {
     create_file(&mut root0, "config", &[]).await;
 
     let mut root1 = branch1.open_or_create_root().await.unwrap();
-    root1
-        .create_directory("config".to_owned(), rand::random())
-        .await
-        .unwrap();
+    root1.create_directory("config".to_owned()).await.unwrap();
 
     let mut root2 = branch2.open_or_create_root().await.unwrap();
-    root2
-        .create_directory("config".to_owned(), rand::random())
-        .await
-        .unwrap();
+    root2.create_directory("config".to_owned()).await.unwrap();
 
     let root = JointDirectory::new(Some(branch0.clone()), [root0, root1, root2]);
 
@@ -346,17 +331,11 @@ async fn cd_into_concurrent_directory() {
 
     let mut root0 = branch0.open_or_create_root().await.unwrap();
 
-    let mut dir0 = root0
-        .create_directory("pics".to_owned(), rand::random())
-        .await
-        .unwrap();
+    let mut dir0 = root0.create_directory("pics".to_owned()).await.unwrap();
     create_file(&mut dir0, "dog.jpg", &[]).await;
 
     let mut root1 = branch1.open_or_create_root().await.unwrap();
-    let mut dir1 = root1
-        .create_directory("pics".to_owned(), rand::random())
-        .await
-        .unwrap();
+    let mut dir1 = root1.create_directory("pics".to_owned()).await.unwrap();
     create_file(&mut dir1, "cat.jpg", &[]).await;
 
     let root = JointDirectory::new(Some(branch0.clone()), [root0, root1]);
@@ -970,20 +949,14 @@ async fn merge_concurrent_directories() {
     let (_base_dir, [branch0, branch1]) = setup().await;
 
     let mut local_root = branch0.open_or_create_root().await.unwrap();
-    let mut local_dir = local_root
-        .create_directory("dir".into(), rand::random())
-        .await
-        .unwrap();
+    let mut local_dir = local_root.create_directory("dir".into()).await.unwrap();
     create_file(&mut local_dir, "dog.jpg", &[]).await;
 
     local_dir.refresh().await.unwrap();
     let local_dir_vv = local_dir.version_vector().await.unwrap();
 
     let mut remote_root = branch1.open_or_create_root().await.unwrap();
-    let mut remote_dir = remote_root
-        .create_directory("dir".into(), rand::random())
-        .await
-        .unwrap();
+    let mut remote_dir = remote_root.create_directory("dir".into()).await.unwrap();
     create_file(&mut remote_dir, "cat.jpg", &[]).await;
 
     remote_dir.refresh().await.unwrap();
@@ -1078,7 +1051,7 @@ async fn merge_moved_file() {
 
     // Create a new directory in the remote branch
     let mut dir = remote_root
-        .create_directory(dir_name.to_owned(), rand::random())
+        .create_directory(dir_name.to_owned())
         .await
         .unwrap();
 
@@ -1146,10 +1119,7 @@ mod merge_concurrent_file_and_directory {
         create_file(&mut root_a, "config", b"...").await;
 
         let mut root_b = branch_b.open_or_create_root().await.unwrap();
-        root_b
-            .create_directory("config".to_owned(), rand::random())
-            .await
-            .unwrap();
+        root_b.create_directory("config".to_owned()).await.unwrap();
 
         let (branch_l, branch_r) = match case {
             Case::LocalFileRemoteDirectory => (branch_a, branch_b),
@@ -1173,10 +1143,7 @@ async fn merge_file_over_outdated_directory() {
 
     // A: create the directory
     let mut root_a = branch_a.open_or_create_root().await.unwrap();
-    root_a
-        .create_directory("config".to_string(), rand::random())
-        .await
-        .unwrap();
+    root_a.create_directory("config".to_string()).await.unwrap();
 
     // B: merge with A
     merge(&[&branch_b, &branch_a]).await.unwrap();
@@ -1220,10 +1187,7 @@ async fn merge_directory_over_outdated_file() {
         .remove_entry("config", branch_b.id(), &vv)
         .await
         .unwrap();
-    root_b
-        .create_directory("config".to_string(), rand::random())
-        .await
-        .unwrap();
+    root_b.create_directory("config".to_string()).await.unwrap();
 
     // A: merge with B
     let status = merge(&[&branch_a, &branch_b]).await.unwrap();
@@ -1279,10 +1243,7 @@ mod merge_concurrent_update_and_delete {
                 create_file(&mut root_a, "entry", b"a v1").await;
             }
             EntryType::Directory => {
-                root_a
-                    .create_directory("entry".to_owned(), rand::random())
-                    .await
-                    .unwrap();
+                root_a.create_directory("entry".to_owned()).await.unwrap();
             }
         }
 
@@ -1397,30 +1358,18 @@ async fn remove_non_empty_subdirectory() {
     let (_base_dir, [branch0, branch1]) = setup().await;
 
     let mut local_root = branch0.open_or_create_root().await.unwrap();
-    let mut local_dir = local_root
-        .create_directory("dir0".into(), rand::random())
-        .await
-        .unwrap();
+    let mut local_dir = local_root.create_directory("dir0".into()).await.unwrap();
     create_file(&mut local_dir, "foo.txt", &[]).await;
     drop(local_dir);
 
-    local_root
-        .create_directory("dir1".into(), rand::random())
-        .await
-        .unwrap();
+    local_root.create_directory("dir1".into()).await.unwrap();
 
     let mut remote_root = branch1.open_or_create_root().await.unwrap();
-    let mut remote_dir = remote_root
-        .create_directory("dir0".into(), rand::random())
-        .await
-        .unwrap();
+    let mut remote_dir = remote_root.create_directory("dir0".into()).await.unwrap();
     create_file(&mut remote_dir, "bar.txt", &[]).await;
     drop(remote_dir);
 
-    remote_root
-        .create_directory("dir2".into(), rand::random())
-        .await
-        .unwrap();
+    remote_root.create_directory("dir2".into()).await.unwrap();
 
     let mut root = JointDirectory::new(Some(branch0.clone()), [local_root.clone(), remote_root]);
 

@@ -149,13 +149,9 @@ impl Directory {
     }
 
     /// Creates a new subdirectory of this directory.
-    ///
-    /// `blob_id` is the blob id of the directory to be created. It must be unique. The easiest way
-    /// to achieve it is to generate it randomly (it has enough bits for collisions to be
-    /// astronomically unlikely).
     #[instrument(skip(self))]
-    // TODO: remote the `blob_id` param, generate it randomly inside
-    pub(crate) async fn create_directory(&mut self, name: String, blob_id: BlobId) -> Result<Self> {
+    pub(crate) async fn create_directory(&mut self, name: String) -> Result<Self> {
+        let blob_id = rand::random();
         let lock = self
             .branch()
             .locker()
