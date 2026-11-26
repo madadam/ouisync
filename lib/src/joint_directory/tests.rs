@@ -978,12 +978,7 @@ async fn merge_concurrent_directories() {
     // version vectors are merged
     assert_eq!(entry.version_vector(), &local_dir_vv.merged(&remote_dir_vv));
 
-    let dir = entry
-        .directory()
-        .unwrap()
-        .open(DirectoryFallback::Disabled)
-        .await
-        .unwrap();
+    let dir = open_directory(&local_root, "dir").await;
     assert_eq!(dir.entries().count(), 2);
 
     dir.lookup("dog.jpg").unwrap().file().unwrap();
@@ -1072,14 +1067,7 @@ async fn merge_moved_file() {
     // The file is moved from it's original location to the new directory
     assert_matches!(local_root.lookup(file_name), Ok(EntryRef::Tombstone(_)));
 
-    let dir = local_root
-        .lookup(dir_name)
-        .unwrap()
-        .directory()
-        .unwrap()
-        .open(DirectoryFallback::Disabled)
-        .await
-        .unwrap();
+    let dir = open_directory(&local_root, dir_name).await;
     let mut file = dir
         .lookup(file_name)
         .unwrap()
@@ -1267,14 +1255,8 @@ mod merge_concurrent_update_and_delete {
                 update_file(&root_a, "entry", b"a v2", &branch_a).await;
             }
             EntryType::Directory => {
-                root_a
-                    .lookup("entry")
-                    .unwrap()
-                    .directory()
-                    .unwrap()
-                    .open(DirectoryFallback::Disabled)
+                open_directory(&root_a, "entry")
                     .await
-                    .unwrap()
                     .create_file("file".to_owned())
                     .await
                     .unwrap();
@@ -1384,6 +1366,117 @@ async fn remove_non_empty_subdirectory() {
     assert_matches!(local_root.lookup("dir1"), Ok(EntryRef::Directory(_)));
 }
 
+// Removing a remote entry before the merge must not prevent the other entries from being merged
+// later.
+#[tokio::test]
+async fn remove_remote_entry_then_merge() {
+    let (_base_dir, [local, remote]) = setup().await;
+
+    let mut remote_root = remote.open_or_create_root().await.unwrap();
+    create_file(&mut remote_root, "a.txt", b"a").await;
+    create_file(&mut remote_root, "b.txt", b"b").await;
+    remote_root.refresh().await.unwrap();
+
+    let local_root = local.open_or_create_root().await.unwrap();
+    JointDirectory::new(Some(local.clone()), [local_root, remote_root])
+        .remove_entry("b.txt")
+        .await
+        .unwrap();
+
+    assert_matches!(merge(&[&local, &remote]).await, Ok(MergeStatus::Completed));
+
+    let local_root = local.open_or_create_root().await.unwrap();
+    assert_matches!(local_root.lookup("a.txt"), Ok(EntryRef::File(_)));
+    assert_matches!(local_root.lookup("b.txt"), Ok(EntryRef::Tombstone(_)));
+}
+
+// Renaming a directory in one branch while concurrently modifying it in another branch must keep
+// both the renamed directory and the concurrently modified original one, each with its own content.
+//
+// FIXME: currently broken because moving an entry keeps its blob id, so the renamed directory
+// and the concurrently modified original end up sharing the same blob after the merge.
+#[ignore]
+#[tokio::test]
+async fn merge_renamed_directory_concurrent_with_update() {
+    let (_base_dir, [local, remote]) = setup().await;
+
+    let mut remote_root = remote.open_or_create_root().await.unwrap();
+    let mut remote_dir = remote_root.create_directory("d".into()).await.unwrap();
+    create_file(&mut remote_dir, "f1.txt", b"one").await;
+    merge(&[&local, &remote]).await.unwrap();
+
+    // Remote renames "d" to "a"
+    remote_root.refresh().await.unwrap();
+    let mut remote_root_dst = remote_root.clone();
+    remote_root
+        .move_entry("d", &mut remote_root_dst, "a")
+        .await
+        .unwrap();
+
+    // Local concurrently creates a file in "d"
+    let local_root = local.open_or_create_root().await.unwrap();
+    let mut local_dir = open_directory(&local_root, "d").await;
+    create_file(&mut local_dir, "f2.txt", b"two").await;
+
+    assert_matches!(merge(&[&local, &remote]).await, Ok(MergeStatus::Completed));
+
+    let local_root = local.open_or_create_root().await.unwrap();
+
+    let dir_a = open_directory(&local_root, "a").await;
+    assert_eq!(entry_names(&dir_a), ["f1.txt"]);
+
+    let dir_d = open_directory(&local_root, "d").await;
+    assert_eq!(entry_names(&dir_d), ["f1.txt", "f2.txt"]);
+}
+
+// Renaming a file in one branch while concurrently modifying it in another branch must keep both
+// the renamed file and the concurrently modified original one, each with its own content.
+//
+// FIXME: currently broken because moving an entry keeps its blob id, so the renamed file
+// and the concurrently modified original end up sharing the same blob after the merge.
+#[ignore]
+#[tokio::test]
+async fn merge_renamed_file_concurrent_with_update() {
+    let (_base_dir, [local, remote]) = setup().await;
+
+    let mut remote_root = remote.open_or_create_root().await.unwrap();
+    drop(create_file(&mut remote_root, "f.txt", b"one").await);
+    merge(&[&local, &remote]).await.unwrap();
+
+    // Remote renames "f.txt" to "a.txt"
+    remote_root.refresh().await.unwrap();
+    let mut remote_root_dst = remote_root.clone();
+    remote_root
+        .move_entry("f.txt", &mut remote_root_dst, "a.txt")
+        .await
+        .unwrap();
+
+    // Local concurrently modifies "f.txt"
+    let local_root = local.open_or_create_root().await.unwrap();
+    drop(update_file(&local_root, "f.txt", b"two", &local).await);
+
+    assert_matches!(merge(&[&local, &remote]).await, Ok(MergeStatus::Completed));
+
+    let local_root = local.open_or_create_root().await.unwrap();
+
+    assert_eq!(
+        open_file(&local_root, "a.txt")
+            .await
+            .read_to_end()
+            .await
+            .unwrap(),
+        b"one"
+    );
+    assert_eq!(
+        open_file(&local_root, "f.txt")
+            .await
+            .read_to_end()
+            .await
+            .unwrap(),
+        b"two"
+    );
+}
+
 async fn setup<const N: usize>() -> (TempDir, [Branch; N]) {
     setup_with_rng::<N>(rand::make_rng()).await
 }
@@ -1475,6 +1568,24 @@ async fn open_file(parent: &Directory, name: &str) -> File {
         .open()
         .await
         .unwrap()
+}
+
+async fn open_directory(parent: &Directory, name: &str) -> Directory {
+    parent
+        .lookup(name)
+        .unwrap()
+        .directory()
+        .unwrap()
+        .open(DirectoryFallback::Disabled)
+        .await
+        .unwrap()
+}
+
+fn entry_names(dir: &Directory) -> Vec<&str> {
+    dir.entries()
+        .filter(|entry| !matches!(entry, EntryRef::Tombstone(_)))
+        .map(|entry| entry.name())
+        .collect()
 }
 
 async fn read_version_vector(parent: &Directory, name: &str) -> VersionVector {
@@ -1572,28 +1683,4 @@ async fn dump_directory_into(
     }
 
     Ok(())
-}
-
-// Removing a remote entry before the merge must not prevent the other entries from being merged
-// later.
-#[tokio::test]
-async fn remove_remote_entry_then_merge() {
-    let (_base_dir, [local, remote]) = setup().await;
-
-    let mut remote_root = remote.open_or_create_root().await.unwrap();
-    create_file(&mut remote_root, "a.txt", b"a").await;
-    create_file(&mut remote_root, "b.txt", b"b").await;
-    remote_root.refresh().await.unwrap();
-
-    let local_root = local.open_or_create_root().await.unwrap();
-    JointDirectory::new(Some(local.clone()), [local_root, remote_root])
-        .remove_entry("b.txt")
-        .await
-        .unwrap();
-
-    assert_matches!(merge(&[&local, &remote]).await, Ok(MergeStatus::Completed));
-
-    let local_root = local.open_or_create_root().await.unwrap();
-    assert_matches!(local_root.lookup("a.txt"), Ok(EntryRef::File(_)));
-    assert_matches!(local_root.lookup("b.txt"), Ok(EntryRef::Tombstone(_)));
 }
