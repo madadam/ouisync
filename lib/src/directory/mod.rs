@@ -232,6 +232,8 @@ impl Directory {
         let mut tx = self.branch().store().begin_write().await?;
         let mut changeset = Changeset::new();
 
+        self.refresh_in(&mut tx).await?;
+
         // If we are removing a directory, ensure it's empty (recursive removal can still be
         // implemented at the upper layers).
         self.check_directory_empty(&mut tx, name).await?;
